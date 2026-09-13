@@ -59,5 +59,12 @@ jobs:
       - name: End-to-end smoke test
         run: |
           npm run start &
-          npx wait-on http://localhost:3000 --timeout 60000
+          # Poll with curl rather than `npx wait-on`: that fetches an unpinned
+          # package from the registry mid-job, which is both a needless failure
+          # mode and a supply-chain surface for a three-line wait.
+          for i in $(seq 1 60); do
+            curl -fsS -o /dev/null http://localhost:3000/ && break
+            [ "$i" -eq 60 ] && { echo "Server did not start within 60s"; exit 1; }
+            sleep 1
+          done
           BASE_URL=http://localhost:3000 ./scripts/smoke.sh

@@ -87,8 +87,10 @@ The app is on `http://localhost:3000`; Postgres is exposed on 5432 for local too
 (remove that port mapping in production).
 
 The `Dockerfile` is a three-stage build producing a Next.js standalone output that runs as
-a non-root user. The final image carries only the server bundle, static assets, the Prisma
-schema and the generated client — no source, no dev dependencies.
+a non-root user. Standalone output is gated behind `BUILD_STANDALONE=1`, which only the
+Docker build sets — elsewhere `npm run start` runs `next start` normally. The final
+image carries only the server bundle, static assets, the Prisma schema and the generated
+client — no source, no dev dependencies.
 
 ### Just the database
 
@@ -126,7 +128,7 @@ Type=simple
 User=lexicon
 WorkingDirectory=/srv/lexicon
 EnvironmentFile=/srv/lexicon/.env
-ExecStart=/usr/bin/node_modules/.bin/next start -p 3000
+ExecStart=/srv/lexicon/node_modules/.bin/next start -p 3000
 Restart=always
 RestartSec=5
 

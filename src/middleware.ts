@@ -1,5 +1,5 @@
 import { NextResponse, type NextRequest } from "next/server";
-import { jwtVerify } from "jose";
+import { jwtVerify } from "jose/jwt/verify";
 
 /**
  * Edge middleware: a cheap gate, not the authorisation boundary.
@@ -12,6 +12,9 @@ import { jwtVerify } from "jose";
  * and someone's data.
  */
 
+// Imported from the subpath rather than the "jose" barrel: the barrel drags in
+// the JWE encryption path, which references CompressionStream and is therefore
+// unsupported in the Edge Runtime. We only sign and verify JWS.
 const ACCESS_COOKIE = "lx_at";
 
 const PUBLIC_PATHS = ["/", "/login", "/register"];

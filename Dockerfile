@@ -20,6 +20,8 @@ COPY . .
 # the runtime stage so `migrate deploy` can run there.
 RUN npx prisma generate
 ENV NEXT_TELEMETRY_DISABLED=1
+# Opts this build into .next/standalone, which the runtime stage copies.
+ENV BUILD_STANDALONE=1
 RUN npm run build
 
 FROM node:22-alpine AS runner

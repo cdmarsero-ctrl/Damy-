@@ -87,7 +87,11 @@ START=$(req POST /api/placement/start)
 TEST_ID=$(echo "$START" | field testId)
 ITEM_ID=$(echo "$START" | field item.id)
 check "placement test starts and returns an item" "$([ -n "$TEST_ID" ] && [ -n "$ITEM_ID" ] && echo true || echo false)"
-check "the answer key is not leaked to the client" "$([ -z "$(echo "$START" | field item.answerIndex)" ] && echo true || echo false)"
+# Requires a real item first: an error response has no answerIndex either, and
+# a security assertion that passes when nothing was returned is worthless.
+check "the answer key is not leaked to the client" \
+  "$([ -n "$(echo "$START" | field item.options.0)" ] \
+     && [ -z "$(echo "$START" | field item.answerIndex)" ] && echo true || echo false)"
 
 answered=0
 done_flag=""
@@ -127,8 +131,9 @@ LESSON_ID=$(echo "$TRACKS" | field tracks.0.units.0.lessons.0.id)
 LESSON=$(req GET "/api/lessons/$LESSON_ID")
 EX_ID=$(echo "$LESSON" | field lesson.exercises.0.id)
 check "lesson loads with exercises" "$([ -n "$EX_ID" ] && echo true || echo false)"
+# Guarded by the presence of exercises, so an error response cannot pass this.
 check "exercise solutions are never sent to the client" \
-  "$(echo "$LESSON" | grep -q '"solution"' && echo false || echo true)"
+  "$([ -n "$EX_ID" ] && ! echo "$LESSON" | grep -q '"solution"' && echo true || echo false)"
 
 GRADE=$(req POST /api/lessons/submit "{\"exerciseId\":\"$EX_ID\",\"response\":{\"answerIndex\":0},\"durationMs\":5000}")
 check "an exercise attempt is graded" "$([ -n "$(echo "$GRADE" | field score)" ] && echo true || echo false)"
@@ -199,8 +204,9 @@ EXAM_START=$(req POST /api/exams/start "{\"moduleId\":\"$MODULE_ID\"}")
 ATTEMPT_ID=$(echo "$EXAM_START" | field attempt.id)
 TASK_ID=$(echo "$EXAM_START" | field tasks.0.id)
 check "a timed attempt starts" "$([ -n "$ATTEMPT_ID" ] && echo true || echo false)"
+# Guarded by the presence of tasks, for the same reason.
 check "task solutions are withheld during the attempt" \
-  "$(echo "$EXAM_START" | grep -q '"solution"' && echo false || echo true)"
+  "$([ -n "$TASK_ID" ] && ! echo "$EXAM_START" | grep -q '"solution"' && echo true || echo false)"
 
 EXAM_SUBMIT=$(req POST /api/exams/submit \
   "{\"attemptId\":\"$ATTEMPT_ID\",\"responses\":[{\"taskId\":\"$TASK_ID\",\"response\":{\"pairs\":{\"A\":\"i\"}}}],\"durationSec\":600}")

@@ -20,9 +20,12 @@ const securityHeaders = [
 
 const nextConfig: NextConfig = {
   reactStrictMode: true,
-  // Emits .next/standalone — a self-contained server bundle with a minimal
-  // node_modules, which is what the Dockerfile's runtime stage copies.
-  output: "standalone",
+  // Standalone output is only for the Docker image, whose runtime stage copies
+  // .next/standalone. Enabling it unconditionally makes `next start` — the
+  // command the README and deployment docs tell people to run — emit
+  // "next start does not work with output: standalone". The Dockerfile sets
+  // this flag; everywhere else keeps a working `npm run start`.
+  ...(process.env.BUILD_STANDALONE === "1" ? { output: "standalone" as const } : {}),
   poweredByHeader: false,
   serverExternalPackages: ["@prisma/client", "bcryptjs"],
   experimental: {
