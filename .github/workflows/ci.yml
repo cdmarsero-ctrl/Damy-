@@ -1,0 +1,63 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: lexicon
+          POSTGRES_PASSWORD: lexicon
+          POSTGRES_DB: lexicon
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U lexicon"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      DATABASE_URL: postgresql://lexicon:lexicon@localhost:5432/lexicon?schema=public
+      AUTH_SECRET: ci-only-secret-not-used-anywhere-else-0123456789
+      NEXT_PUBLIC_APP_URL: http://localhost:3000
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Generate Prisma client
+        run: npx prisma generate
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Unit tests
+        run: npm run test
+
+      - name: Apply migrations
+        run: npx prisma migrate deploy
+
+      - name: Seed content
+        run: npm run db:seed
+
+      - name: Build
+        run: npm run build
+
+      - name: End-to-end smoke test
+        run: |
+          npm run start &
+          npx wait-on http://localhost:3000 --timeout 60000
+          BASE_URL=http://localhost:3000 ./scripts/smoke.sh
