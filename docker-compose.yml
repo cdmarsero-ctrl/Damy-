@@ -1,0 +1,37 @@
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: lexicon
+      POSTGRES_PASSWORD: lexicon
+      POSTGRES_DB: lexicon
+    ports:
+      # Exposed for local tooling (psql, Prisma Studio). Remove in production.
+      - "5432:5432"
+    volumes:
+      - lexicon-db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U lexicon -d lexicon"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  app:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://lexicon:lexicon@db:5432/lexicon?schema=public
+      AUTH_SECRET: ${AUTH_SECRET:?set AUTH_SECRET in .env — openssl rand -base64 48}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4o}
+      NEXT_PUBLIC_APP_URL: ${NEXT_PUBLIC_APP_URL:-http://localhost:3000}
+      NODE_ENV: production
+    ports:
+      - "3000:3000"
+
+volumes:
+  lexicon-db:

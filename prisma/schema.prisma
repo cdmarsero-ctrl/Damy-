@@ -1,0 +1,927 @@
+// Lexicon — Prisma schema
+// Advanced English mastery platform (CEFR B2 / C1 / C2)
+//
+// Conventions
+//  - Every user-owned row carries `userId` and cascades on user deletion (GDPR erasure).
+//  - Anything the AI or a rubric produces is stored as Json so the shape can evolve
+//    without a migration; see docs/DATA-MODEL.md for the documented Json contracts.
+//  - `@@index` is added for every column we filter or sort on in a hot path.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// Enums
+// ---------------------------------------------------------------------------
+
+enum Cefr {
+  B2
+  C1
+  C2
+}
+
+enum Role {
+  LEARNER
+  AUTHOR
+  ADMIN
+}
+
+enum Skill {
+  READING
+  WRITING
+  LISTENING
+  SPEAKING
+  GRAMMAR
+  VOCABULARY
+  PRONUNCIATION
+  MEDIATION
+}
+
+enum Goal {
+  BUSINESS
+  ACADEMIC
+  EXAM
+  TRAVEL
+  CULTURE
+  EVERYDAY_FLUENCY
+}
+
+enum ExamName {
+  IELTS
+  TOEFL
+  CAE // Cambridge C1 Advanced
+  CPE // Cambridge C2 Proficiency
+}
+
+enum Accent {
+  US
+  UK
+  AU
+  CA
+  IE
+  IN
+  ZA
+  SCO
+}
+
+/// Exercise renderers. Adding a value requires a matching renderer in
+/// src/components/exercises/ — see docs/EXTENDING.md.
+enum ExerciseType {
+  MULTIPLE_CHOICE
+  MULTI_SELECT
+  GAP_FILL
+  DRAG_ORDER
+  MATCHING
+  TRANSFORMATION // key-word sentence transformation (Cambridge style)
+  ERROR_CORRECTION
+  OPEN_WRITING
+  SPEAKING_PROMPT
+  DICTATION
+  LISTENING_COMPREHENSION
+  READING_ANALYSIS
+  REGISTER_SHIFT // rewrite in a different register
+  COLLOCATION_BUILD
+  NOTE_TAKING
+}
+
+enum LessonStatus {
+  NOT_STARTED
+  IN_PROGRESS
+  COMPLETED
+  MASTERED
+}
+
+enum CardState {
+  NEW
+  LEARNING
+  REVIEW
+  RELEARNING
+}
+
+/// SM-2 style grades, coarse-grained for a four-button UI.
+enum ReviewRating {
+  AGAIN
+  HARD
+  GOOD
+  EASY
+}
+
+enum LexicalType {
+  WORD
+  COLLOCATION
+  PHRASAL_VERB
+  IDIOM
+  SLANG
+  ACADEMIC_PHRASE
+  DISCOURSE_MARKER
+}
+
+enum Register {
+  SLANG
+  INFORMAL
+  NEUTRAL
+  FORMAL
+  ACADEMIC
+  LITERARY
+}
+
+enum Connotation {
+  POSITIVE
+  NEUTRAL
+  NEGATIVE
+  IRONIC
+}
+
+enum ConversationMode {
+  TUTOR
+  DEBATE
+  ROLEPLAY
+  INTERVIEW
+  EXAM_SPEAKING
+}
+
+enum MessageRole {
+  USER
+  ASSISTANT
+  SYSTEM
+}
+
+enum WritingGenre {
+  ESSAY
+  REPORT
+  PROPOSAL
+  EMAIL
+  REVIEW
+  ARTICLE
+  ABSTRACT
+  COVER_LETTER
+  SUMMARY
+}
+
+enum AttemptStatus {
+  IN_PROGRESS
+  SUBMITTED
+  SCORED
+  ABANDONED
+}
+
+enum ChallengeType {
+  XP
+  LESSONS
+  REVIEWS
+  SPEAKING_MINUTES
+  WRITING_WORDS
+  PERFECT_LESSON
+}
+
+enum BadgeTier {
+  BRONZE
+  SILVER
+  GOLD
+  PLATINUM
+}
+
+// ---------------------------------------------------------------------------
+// Identity & profile
+// ---------------------------------------------------------------------------
+
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  passwordHash String
+  name         String
+  avatarUrl    String?
+  role         Role     @default(LEARNER)
+  emailVerified DateTime?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  profile   Profile?
+  settings  UserSettings?
+  stats     UserStats?
+  sessions  AuthSession[]
+
+  enrollments      Enrollment[]
+  lessonProgress   LessonProgress[]
+  exerciseAttempts ExerciseAttempt[]
+  reviewCards      ReviewCard[]
+  reviewLogs       ReviewLog[]
+  xpEvents         XpEvent[]
+  badges           UserBadge[]
+  challenges       UserDailyChallenge[]
+  placementTests   PlacementTest[]
+  conversations    Conversation[]
+  writingSubs      WritingSubmission[]
+  pronunciation    PronunciationAttempt[]
+  examAttempts     ExamAttempt[]
+  skillSnapshots   SkillSnapshot[]
+  studySessions    StudySession[]
+  reports          FeedbackReport[]
+  syncMutations    SyncMutation[]
+
+  @@index([createdAt])
+}
+
+/// Opaque refresh-token sessions. The raw token never touches the database —
+/// only a SHA-256 hash, so a database leak cannot be replayed.
+model AuthSession {
+  id         String   @id @default(cuid())
+  userId     String
+  tokenHash  String   @unique
+  userAgent  String?
+  ip         String?
+  expiresAt  DateTime
+  revokedAt  DateTime?
+  createdAt  DateTime @default(now())
+  lastUsedAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+model Profile {
+  id              String   @id @default(cuid())
+  userId          String   @unique
+  cefrLevel       Cefr     @default(B2)
+  /// Continuous ability estimate on the IRT logit scale, kept between placement
+  /// runs so adaptive item selection can start warm.
+  theta           Float    @default(0)
+  goals           Goal[]   @default([])
+  targetExam      ExamName?
+  examDate        DateTime?
+  nativeLanguage  String?
+  interests       String[] @default([])
+  preferredAccent Accent   @default(UK)
+  dailyGoalXp     Int      @default(50)
+  onboardedAt     DateTime?
+  placedAt        DateTime?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model UserSettings {
+  id               String  @id @default(cuid())
+  userId           String  @unique
+  theme            String  @default("system") // system | light | dark
+  reducedMotion    Boolean @default(false)
+  highContrast     Boolean @default(false)
+  fontScale        Float   @default(1)
+  captionsDefaultOn Boolean @default(true)
+  ttsVoice         String? 
+  speechRate       Float   @default(1)
+  emailDigest      Boolean @default(true)
+  pushReminders    Boolean @default(true)
+  reminderHour     Int     @default(19)
+  offlineEnabled   Boolean @default(true)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+// ---------------------------------------------------------------------------
+// Placement (adaptive, IRT 3PL)
+// ---------------------------------------------------------------------------
+
+model PlacementItem {
+  id             String  @id @default(cuid())
+  skill          Skill
+  cefr           Cefr
+  /// 3PL parameters: a = discrimination, b = difficulty, c = pseudo-guessing.
+  discrimination Float   @default(1)
+  difficulty     Float
+  guessing       Float   @default(0.25)
+  prompt         String
+  context        String?
+  options        Json // string[]
+  answerIndex    Int
+  rationale      String
+  tags           String[] @default([])
+  active         Boolean  @default(true)
+
+  responses PlacementResponse[]
+
+  @@index([active, difficulty])
+  @@index([skill])
+}
+
+model PlacementTest {
+  id            String        @id @default(cuid())
+  userId        String
+  status        AttemptStatus @default(IN_PROGRESS)
+  theta         Float         @default(0)
+  standardError Float         @default(1.5)
+  resultLevel   Cefr?
+  /// { READING: 0.81, GRAMMAR: 0.64, ... } normalised 0-1 per skill.
+  subscores     Json?
+  startedAt     DateTime      @default(now())
+  completedAt   DateTime?
+
+  user      User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  responses PlacementResponse[]
+
+  @@index([userId, startedAt])
+}
+
+model PlacementResponse {
+  id         String   @id @default(cuid())
+  testId     String
+  itemId     String
+  answerIndex Int
+  correct    Boolean
+  responseMs Int
+  thetaAfter Float
+  seAfter    Float
+  createdAt  DateTime @default(now())
+
+  test PlacementTest @relation(fields: [testId], references: [id], onDelete: Cascade)
+  item PlacementItem @relation(fields: [itemId], references: [id], onDelete: Cascade)
+
+  @@unique([testId, itemId])
+  @@index([testId])
+}
+
+// ---------------------------------------------------------------------------
+// Curriculum
+// ---------------------------------------------------------------------------
+
+model Track {
+  id          String  @id @default(cuid())
+  slug        String  @unique
+  title       String
+  description String
+  goal        Goal
+  cefr        Cefr
+  icon        String  @default("sparkles")
+  accent      String  @default("indigo")
+  order       Int     @default(0)
+  published   Boolean @default(true)
+
+  units       Unit[]
+  enrollments Enrollment[]
+
+  @@index([goal, cefr])
+}
+
+model Unit {
+  id          String @id @default(cuid())
+  trackId     String
+  slug        String
+  title       String
+  description String
+  cefr        Cefr
+  order       Int    @default(0)
+
+  track   Track    @relation(fields: [trackId], references: [id], onDelete: Cascade)
+  lessons Lesson[]
+
+  @@unique([trackId, slug])
+  @@index([trackId, order])
+}
+
+model Lesson {
+  id               String   @id @default(cuid())
+  unitId           String
+  slug             String
+  title            String
+  subtitle         String?
+  skill            Skill
+  cefr             Cefr
+  order            Int      @default(0)
+  objectives       String[] @default([])
+  estimatedMinutes Int      @default(10)
+  xpReward         Int      @default(20)
+  /// Long-form reading passage or listening transcript rendered before exercises.
+  content          String?
+  audioUrl         String?
+  videoUrl         String?
+  accent           Accent?
+  culturalNote     String?
+  published        Boolean  @default(true)
+
+  unit      Unit             @relation(fields: [unitId], references: [id], onDelete: Cascade)
+  exercises Exercise[]
+  progress  LessonProgress[]
+
+  @@unique([unitId, slug])
+  @@index([unitId, order])
+  @@index([skill, cefr])
+}
+
+model Exercise {
+  id           String       @id @default(cuid())
+  lessonId     String
+  order        Int          @default(0)
+  type         ExerciseType
+  skill        Skill
+  cefr         Cefr
+  prompt       String
+  instructions String?
+  /// Renderer-specific data. Documented per type in docs/DATA-MODEL.md.
+  payload      Json
+  /// Grading key. Never sent to the client — the API strips it.
+  solution     Json
+  explanation  String?
+  points       Int          @default(10)
+  tags         String[]     @default([])
+  /// Optional link to a lexical item so completing this exercise seeds an SRS card.
+  lexicalItemId String?
+
+  lesson      Lesson            @relation(fields: [lessonId], references: [id], onDelete: Cascade)
+  lexicalItem LexicalItem?      @relation(fields: [lexicalItemId], references: [id], onDelete: SetNull)
+  attempts    ExerciseAttempt[]
+
+  @@index([lessonId, order])
+}
+
+// ---------------------------------------------------------------------------
+// Progress
+// ---------------------------------------------------------------------------
+
+model Enrollment {
+  id          String    @id @default(cuid())
+  userId      String
+  trackId     String
+  progressPct Float     @default(0)
+  startedAt   DateTime  @default(now())
+  completedAt DateTime?
+  isPrimary   Boolean   @default(false)
+
+  user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  track Track @relation(fields: [trackId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, trackId])
+  @@index([userId])
+}
+
+model LessonProgress {
+  id           String       @id @default(cuid())
+  userId       String
+  lessonId     String
+  status       LessonStatus @default(IN_PROGRESS)
+  score        Float        @default(0) // 0-1
+  bestScore    Float        @default(0)
+  attempts     Int          @default(0)
+  timeSpentSec Int          @default(0)
+  lastAttemptAt DateTime    @default(now())
+  completedAt  DateTime?
+
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  lesson Lesson @relation(fields: [lessonId], references: [id], onDelete: Cascade)
+
+  exerciseAttempts ExerciseAttempt[]
+
+  @@unique([userId, lessonId])
+  @@index([userId, status])
+}
+
+model ExerciseAttempt {
+  id               String   @id @default(cuid())
+  userId           String
+  exerciseId       String
+  lessonProgressId String?
+  response         Json
+  correct          Boolean
+  score            Float    @default(0) // 0-1
+  /// { summary, issues: [{ span, type, message, suggestion }] }
+  feedback         Json?
+  durationMs       Int      @default(0)
+  createdAt        DateTime @default(now())
+
+  user           User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  exercise       Exercise        @relation(fields: [exerciseId], references: [id], onDelete: Cascade)
+  lessonProgress LessonProgress? @relation(fields: [lessonProgressId], references: [id], onDelete: SetNull)
+
+  @@index([userId, createdAt])
+  @@index([exerciseId])
+}
+
+// ---------------------------------------------------------------------------
+// Lexicon & spaced repetition
+// ---------------------------------------------------------------------------
+
+model LexicalItem {
+  id           String      @id @default(cuid())
+  headword     String
+  type         LexicalType @default(WORD)
+  cefr         Cefr
+  pos          String? // noun, verb, adj, adv, phrase
+  ipa          String?
+  audioUrl     String?
+  definition   String
+  register     Register    @default(NEUTRAL)
+  connotation  Connotation @default(NEUTRAL)
+  domain       String? // law, finance, academia, media...
+  synonyms     String[]    @default([])
+  antonyms     String[]    @default([])
+  collocations String[]    @default([])
+  /// [{ text, source?, note? }]
+  examples     Json        @default("[]")
+  usageNote    String?
+  frequency    Int         @default(0) // corpus rank bucket, lower = more frequent
+
+  cards     ReviewCard[]
+  exercises Exercise[]
+
+  @@unique([headword, type])
+  @@index([cefr, type])
+  @@index([register])
+}
+
+/// One SRS card per (user, lexical item). Scheduling is SM-2 with the
+/// modifications documented in src/lib/srs.ts.
+model ReviewCard {
+  id            String    @id @default(cuid())
+  userId        String
+  lexicalItemId String
+  state         CardState @default(NEW)
+  easeFactor    Float     @default(2.5)
+  intervalDays  Float     @default(0)
+  repetitions   Int       @default(0)
+  lapses        Int       @default(0)
+  dueAt         DateTime  @default(now())
+  lastReviewedAt DateTime?
+  /// Rolling mean of the last 8 grades, 0-1. Drives "mastered" reporting.
+  retention     Float     @default(0)
+  suspended     Boolean   @default(false)
+  createdAt     DateTime  @default(now())
+
+  user        User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  lexicalItem LexicalItem @relation(fields: [lexicalItemId], references: [id], onDelete: Cascade)
+  logs        ReviewLog[]
+
+  @@unique([userId, lexicalItemId])
+  @@index([userId, dueAt])
+  @@index([userId, state])
+}
+
+model ReviewLog {
+  id           String       @id @default(cuid())
+  cardId       String
+  userId       String
+  rating       ReviewRating
+  prevInterval Float
+  newInterval  Float
+  prevEase     Float
+  newEase      Float
+  durationMs   Int          @default(0)
+  reviewedAt   DateTime     @default(now())
+
+  card ReviewCard @relation(fields: [cardId], references: [id], onDelete: Cascade)
+  user User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, reviewedAt])
+  @@index([cardId])
+}
+
+// ---------------------------------------------------------------------------
+// Gamification
+// ---------------------------------------------------------------------------
+
+model UserStats {
+  id              String   @id @default(cuid())
+  userId          String   @unique
+  xpTotal         Int      @default(0)
+  level           Int      @default(1)
+  streakCurrent   Int      @default(0)
+  streakLongest   Int      @default(0)
+  /// Stored as a UTC calendar date at midnight so streaks are timezone-stable.
+  lastActiveDate  DateTime?
+  streakFreezes   Int      @default(2)
+  minutesTotal    Int      @default(0)
+  lessonsCompleted Int     @default(0)
+  reviewsCompleted Int     @default(0)
+  wordsMastered   Int      @default(0)
+  updatedAt       DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([xpTotal])
+}
+
+model XpEvent {
+  id        String   @id @default(cuid())
+  userId    String
+  amount    Int
+  source    String // lesson | review | challenge | streak | writing | speaking | exam
+  refId     String?
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+  @@index([createdAt])
+}
+
+model Badge {
+  id          String    @id @default(cuid())
+  slug        String    @unique
+  title       String
+  description String
+  icon        String    @default("award")
+  tier        BadgeTier @default(BRONZE)
+  /// { metric: "streakCurrent", gte: 30 } — evaluated in src/lib/gamification.ts
+  criteria    Json
+
+  users UserBadge[]
+}
+
+model UserBadge {
+  id       String   @id @default(cuid())
+  userId   String
+  badgeId  String
+  progress Float    @default(0)
+  earnedAt DateTime?
+
+  user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  badge Badge @relation(fields: [badgeId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, badgeId])
+  @@index([userId])
+}
+
+model DailyChallenge {
+  id          String        @id @default(cuid())
+  /// UTC midnight for the day this challenge belongs to.
+  date        DateTime
+  type        ChallengeType
+  title       String
+  description String
+  target      Int
+  xpReward    Int           @default(30)
+  cefr        Cefr?
+
+  users UserDailyChallenge[]
+
+  @@unique([date, type])
+  @@index([date])
+}
+
+model UserDailyChallenge {
+  id          String    @id @default(cuid())
+  userId      String
+  challengeId String
+  progress    Int       @default(0)
+  completedAt DateTime?
+
+  user      User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  challenge DailyChallenge @relation(fields: [challengeId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, challengeId])
+  @@index([userId])
+}
+
+// ---------------------------------------------------------------------------
+// AI features
+// ---------------------------------------------------------------------------
+
+model Conversation {
+  id        String           @id @default(cuid())
+  userId    String
+  mode      ConversationMode
+  topic     String
+  cefr      Cefr
+  persona   String?
+  /// For DEBATE: the side the AI argues, so it stays consistent across turns.
+  aiStance  String?
+  userStance String?
+  status    AttemptStatus    @default(IN_PROGRESS)
+  /// Rolling analysis: { accuracy, range, complexity, errorsByType }
+  metrics   Json?
+  createdAt DateTime         @default(now())
+  updatedAt DateTime         @updatedAt
+
+  user     User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  messages Message[]
+
+  @@index([userId, createdAt])
+}
+
+model Message {
+  id             String      @id @default(cuid())
+  conversationId String
+  role           MessageRole
+  content        String
+  /// [{ span: [start,end], type, original, suggestion, explanation, severity }]
+  corrections    Json?
+  /// [{ label, text, rationale }] — upgrades toward C1/C2 phrasing.
+  suggestions    Json?
+  metrics        Json?
+  createdAt      DateTime    @default(now())
+
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@index([conversationId, createdAt])
+}
+
+model WritingSubmission {
+  id        String        @id @default(cuid())
+  userId    String
+  genre     WritingGenre
+  cefr      Cefr
+  prompt    String
+  title     String?
+  text      String
+  wordCount Int           @default(0)
+  status    AttemptStatus @default(SUBMITTED)
+  createdAt DateTime      @default(now())
+
+  user     User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  feedback WritingFeedback?
+
+  @@index([userId, createdAt])
+}
+
+model WritingFeedback {
+  id           String   @id @default(cuid())
+  submissionId String   @unique
+  overallBand  Float
+  /// { taskAchievement, coherence, lexicalResource, grammaticalRange, ... } 0-9
+  criteria     Json
+  /// [{ span:[s,e], type, message, suggestion, severity }]
+  annotations  Json
+  strengths    String[] @default([])
+  priorities   String[] @default([])
+  modelAnswer  String?
+  summary      String
+  readability  Json? // { fleschKincaid, avgSentenceLen, lexicalDensity, ttr }
+  createdAt    DateTime @default(now())
+
+  submission WritingSubmission @relation(fields: [submissionId], references: [id], onDelete: Cascade)
+}
+
+model PronunciationAttempt {
+  id            String   @id @default(cuid())
+  userId        String
+  targetText    String
+  transcript    String
+  accuracy      Float // 0-100
+  fluency       Float
+  completeness  Float
+  prosody       Float
+  overall       Float
+  accent        Accent   @default(UK)
+  /// [{ word, score, expectedIpa, issue }]
+  wordScores    Json     @default("[]")
+  tips          String[] @default([])
+  durationMs    Int      @default(0)
+  createdAt     DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+}
+
+// ---------------------------------------------------------------------------
+// Exam preparation
+// ---------------------------------------------------------------------------
+
+model ExamModule {
+  id          String   @id @default(cuid())
+  exam        ExamName
+  slug        String   @unique
+  section     String // Reading | Listening | Writing | Speaking | Use of English
+  title       String
+  description String
+  cefr        Cefr
+  durationMin Int      @default(30)
+  instructions String
+  order       Int      @default(0)
+
+  tasks    ExamTask[]
+  attempts ExamAttempt[]
+
+  @@index([exam, section])
+}
+
+model ExamTask {
+  id       String       @id @default(cuid())
+  moduleId String
+  order    Int          @default(0)
+  type     ExerciseType
+  prompt   String
+  payload  Json
+  solution Json
+  /// Band descriptors for human/AI scoring of productive tasks.
+  rubric   Json?
+  points   Int          @default(1)
+
+  module    ExamModule     @relation(fields: [moduleId], references: [id], onDelete: Cascade)
+  responses ExamResponse[]
+
+  @@index([moduleId, order])
+}
+
+model ExamAttempt {
+  id            String        @id @default(cuid())
+  userId        String
+  moduleId      String
+  status        AttemptStatus @default(IN_PROGRESS)
+  rawScore      Float         @default(0)
+  maxScore      Float         @default(0)
+  /// IELTS band / TOEFL scaled / Cambridge scale score.
+  scaledScore   Float?
+  band          String?
+  sectionScores Json?
+  startedAt     DateTime      @default(now())
+  submittedAt   DateTime?
+  durationSec   Int           @default(0)
+
+  user      User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  module    ExamModule     @relation(fields: [moduleId], references: [id], onDelete: Cascade)
+  responses ExamResponse[]
+
+  @@index([userId, startedAt])
+}
+
+model ExamResponse {
+  id        String   @id @default(cuid())
+  attemptId String
+  taskId    String
+  response  Json
+  score     Float    @default(0)
+  feedback  Json?
+  createdAt DateTime @default(now())
+
+  attempt ExamAttempt @relation(fields: [attemptId], references: [id], onDelete: Cascade)
+  task    ExamTask    @relation(fields: [taskId], references: [id], onDelete: Cascade)
+
+  @@unique([attemptId, taskId])
+}
+
+// ---------------------------------------------------------------------------
+// Analytics & sync
+// ---------------------------------------------------------------------------
+
+model SkillSnapshot {
+  id           String   @id @default(cuid())
+  userId       String
+  /// UTC midnight — one row per user/skill/day, upserted.
+  date         DateTime
+  skill        Skill
+  score        Float // 0-1
+  cefrEstimate Cefr
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, skill, date])
+  @@index([userId, date])
+}
+
+model StudySession {
+  id        String   @id @default(cuid())
+  userId    String
+  activity  String
+  minutes   Int      @default(0)
+  xpEarned  Int      @default(0)
+  startedAt DateTime @default(now())
+  endedAt   DateTime?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, startedAt])
+}
+
+model FeedbackReport {
+  id          String   @id @default(cuid())
+  userId      String
+  periodStart DateTime
+  periodEnd   DateTime
+  summary     String
+  strengths   String[] @default([])
+  weaknesses  String[] @default([])
+  /// [{ title, why, action, href }]
+  recommendations Json  @default("[]")
+  metrics     Json?
+  createdAt   DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, periodStart])
+  @@index([userId, createdAt])
+}
+
+/// Offline queue replay. The client POSTs buffered mutations with a stable
+/// idempotencyKey; replaying the same key is a no-op.
+model SyncMutation {
+  id             String   @id @default(cuid())
+  userId         String
+  clientId       String
+  idempotencyKey String
+  kind           String
+  payload        Json
+  appliedAt      DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, idempotencyKey])
+  @@index([userId, appliedAt])
+}
