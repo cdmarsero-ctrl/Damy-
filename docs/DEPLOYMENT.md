@@ -10,6 +10,7 @@
 - [ ] `DATABASE_URL` points at a PostgreSQL 14+ instance with TLS enabled.
 - [ ] Migrations applied with `npx prisma migrate deploy` (never `db push` in production).
 - [ ] Content seeded: `npm run db:seed`. Idempotent, so safe to re-run on each release.
+      On Vercel both of these happen in the build — see [Vercel](#vercel).
 - [ ] `NODE_ENV=production` — this is what makes auth cookies `Secure`.
 - [ ] TLS terminating in front of the app. The `Strict-Transport-Security` header is set
       in `next.config.ts` and is meaningless over plain HTTP.
@@ -46,20 +47,23 @@ server.
 
 ## Vercel
 
-1. Import the repository. The framework is detected; no build overrides are needed.
-2. Add the environment variables above.
+1. Import the repository. The framework is detected, and `vercel.json` in the repository
+   root supplies the build command — no overrides to set by hand.
+2. Add the environment variables above. `DATABASE_URL` and `AUTH_SECRET` must be present
+   **before the first deploy**: the build applies migrations and seeds content, so it
+   fails loudly rather than shipping an app with an empty database.
 3. Attach a Postgres database — Vercel Postgres, Neon and Supabase all work. Use a
    **pooled** connection string; serverless functions exhaust direct connections quickly.
-4. Set the build command to run migrations first:
+4. Deploy. `vercel.json` runs:
 
    ```
-   prisma migrate deploy && prisma generate && next build
+   prisma migrate deploy && prisma generate && npm run db:seed && next build
    ```
 
-   `package.json`'s `build` script already runs `prisma generate`; `migrate deploy` has to
-   be added here because Vercel does not run it by itself.
-
-5. Deploy, then seed once from a machine with access:
+   `migrate deploy` is here because Vercel does not run it by itself, and the seed is
+   idempotent — it upserts on natural keys, so every release ships content updates without
+   touching learner progress. Drop `npm run db:seed &&` from `vercel.json` if you would
+   rather seed by hand:
 
    ```bash
    DATABASE_URL="<production url>" npm run db:seed
