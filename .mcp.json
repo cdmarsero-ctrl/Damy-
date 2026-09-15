@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "openai": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["tsx", "tools/mcp/openai/server.ts"]
+    }
+  }
+}
