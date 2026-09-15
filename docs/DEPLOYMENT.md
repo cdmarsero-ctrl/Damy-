@@ -36,6 +36,7 @@
 | `OPENAI_BASE_URL` | no | `""` | For any OpenAI-compatible endpoint |
 | `RATE_LIMIT_AUTH_PER_MIN` | no | `10` | Per IP |
 | `RATE_LIMIT_AI_PER_MIN` | no | `20` | Per user |
+| `MIGRATE_PREVIEW` | no | `false` | Vercel only: `true` lets a non-production deployment migrate and seed |
 | `NEXT_PUBLIC_APP_NAME` | no | `Lexicon` | |
 | `NEXT_PUBLIC_APP_URL` | no | `http://localhost:3000` | Used in metadata |
 
@@ -47,27 +48,40 @@ server.
 
 ## Vercel
 
-1. Import the repository. The framework is detected, and `vercel.json` in the repository
-   root supplies the build command — no overrides to set by hand.
-2. Add the environment variables above. `DATABASE_URL` and `AUTH_SECRET` must be present
-   **before the first deploy**: the build applies migrations and seeds content, so it
-   fails loudly rather than shipping an app with an empty database.
-3. Attach a Postgres database — Vercel Postgres, Neon and Supabase all work. Use a
+1. Import the repository. The framework is detected, and `vercel.json` points the build at
+   `scripts/vercel-build.sh` — no overrides to set by hand.
+2. Attach a Postgres database — Vercel Postgres, Neon and Supabase all work. Use a
    **pooled** connection string; serverless functions exhaust direct connections quickly.
-4. Deploy. `vercel.json` runs:
+3. Add the environment variables above, `DATABASE_URL` and `AUTH_SECRET` first.
+4. Deploy.
 
-   ```
-   prisma migrate deploy && prisma generate && npm run db:seed && next build
-   ```
+### What the build does
 
-   `migrate deploy` is here because Vercel does not run it by itself, and the seed is
-   idempotent — it upserts on natural keys, so every release ships content updates without
-   touching learner progress. Drop `npm run db:seed &&` from `vercel.json` if you would
-   rather seed by hand:
+```
+DATABASE_URL set, production   →  prisma migrate deploy → db:seed → prisma generate → next build
+DATABASE_URL set, preview      →  prisma generate → next build          (migrate/seed skipped)
+DATABASE_URL unset             →  prisma generate → next build          (migrate/seed skipped)
+```
 
-   ```bash
-   DATABASE_URL="<production url>" npm run db:seed
-   ```
+`migrate deploy` is there because Vercel does not run it by itself, and the seed is
+idempotent — it upserts on natural keys, so every release ships content updates without
+touching learner progress.
+
+**Previews are skipped deliberately.** Preview deployments inherit whatever `DATABASE_URL`
+the project has, so migrating from an unmerged branch would apply that branch's schema to
+a database other deployments are using. If a preview environment has a database of its
+own, set `MIGRATE_PREVIEW=true` for it.
+
+**A missing `DATABASE_URL` does not fail the build.** You get a deployment and a URL, and
+the first request that touches the database returns the error from `src/lib/env.ts` naming
+exactly what is unset — more useful than Prisma's `P1012` buried in a build log. The
+build itself never needs a reachable database.
+
+To seed by hand instead, drop `npm run db:seed` from the script and run:
+
+```bash
+DATABASE_URL="<production url>" npm run db:seed
+```
 
 **Function duration.** `/api/ai/writing` declares `maxDuration = 90` and the conversation
 endpoint 60. Vercel's Hobby tier caps at 60 s, which is enough for conversation but can
