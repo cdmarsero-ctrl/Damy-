@@ -4,8 +4,11 @@ import {
   BarChart3, BookOpen, Brain, GraduationCap, Mic, PenLine, Repeat, Swords, Target,
 } from "lucide-react";
 
-import { ThemeScript } from "@/components/layout/theme-script";
+import { JsonLd } from "@/components/layout/json-ld";
 import { getClaims } from "@/lib/session";
+import { pageMetadata, softwareApplicationJsonLd } from "@/lib/seo";
+
+export const metadata = pageMetadata("/");
 
 /**
  * Landing page. Signed-in visitors are redirected straight to the dashboard —
@@ -16,35 +19,9 @@ export default async function LandingPage() {
   if (claims) redirect("/dashboard");
 
   return (
-    <div className="min-h-dvh">
-      <ThemeScript />
-
-      <header className="sticky top-0 z-40 h-16 border-b border-[var(--border)] bg-[var(--surface)]/85 backdrop-blur">
-        <div className="max-w-6xl mx-auto h-full px-6 flex items-center justify-between">
-          <Link href="/" className="flex items-center gap-2.5 font-semibold">
-            <span className="size-8 rounded-lg bg-brand-600 text-white grid place-items-center text-sm font-bold">
-              Lx
-            </span>
-            Lexicon
-          </Link>
-          <nav className="flex items-center gap-2 text-sm">
-            <Link
-              href="/login"
-              className="px-4 py-2 rounded-lg font-medium muted hover:text-[var(--text)] transition-colors"
-            >
-              Sign in
-            </Link>
-            <Link
-              href="/register"
-              className="px-4 py-2 rounded-lg font-medium bg-brand-600 text-white hover:bg-brand-700 transition-colors"
-            >
-              Get started
-            </Link>
-          </nav>
-        </div>
-      </header>
-
-      <main>
+    <>
+      <JsonLd data={softwareApplicationJsonLd()} />
+      <main id="main">
         {/* ------------------------------------------------------------ Hero */}
         <section className="max-w-6xl mx-auto px-6 pt-20 pb-24 sm:pt-28">
           <div className="max-w-3xl">
@@ -90,7 +67,11 @@ export default async function LandingPage() {
             </h2>
             <p className="muted max-w-2xl mb-12 text-pretty">
               Every feature here exists because it addresses a specific reason advanced learners
-              plateau — not because a competitor has it.
+              plateau — not because a competitor has it.{" "}
+              <Link href="/features" className="underline underline-offset-2 hover:text-[var(--text)]">
+                Read about every feature
+              </Link>
+              .
             </p>
 
             <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-5">
@@ -158,14 +139,7 @@ export default async function LandingPage() {
           </div>
         </section>
       </main>
-
-      <footer className="border-t border-[var(--border)] py-8">
-        <div className="max-w-6xl mx-auto px-6 flex flex-wrap gap-4 items-center justify-between text-sm muted">
-          <span>Lexicon — advanced English, B2 to C2.</span>
-          <span>Built with Next.js, Prisma and PostgreSQL.</span>
-        </div>
-      </footer>
-    </div>
+    </>
   );
 }
 

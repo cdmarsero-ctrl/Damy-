@@ -83,11 +83,13 @@ npm run start &
 BASE_URL=http://localhost:3000 ./scripts/smoke.sh
 ```
 
-`scripts/smoke.sh` runs 56 checks covering the whole learner journey — register, take
+`scripts/smoke.sh` runs 67 checks covering the whole learner journey — register, take
 the adaptive placement test to completion, enrol, complete a lesson, grade a review card,
 hold a conversation, submit writing, score pronunciation, sit an exam module, read the
-analytics back, replay an offline mutation twice to prove idempotency, and confirm that
-unauthenticated access, weak passwords and stale sessions are all rejected.
+analytics back, replay an offline mutation twice to prove idempotency, confirm that
+unauthenticated access, weak passwords and stale sessions are all rejected, and check that
+robots.txt, the sitemap, llms.txt and every public information page are served to an
+anonymous visitor.
 
 ---
 
@@ -106,6 +108,7 @@ unauthenticated access, weak passwords and stale sessions are all rejected.
 | [docs/ACCESSIBILITY.md](docs/ACCESSIBILITY.md) | The WCAG 2.1 conformance position, feature by feature |
 | [docs/SECURITY.md](docs/SECURITY.md) | Threat model, auth design, and what is deliberately not implemented |
 | [docs/MCP-OPENAI.md](docs/MCP-OPENAI.md) | Consulting GPT from a Claude Code session through the bundled MCP server |
+| [docs/AI-DISCOVERABILITY.md](docs/AI-DISCOVERABILITY.md) | How the public pages, robots.txt, sitemap, llms.txt and structured data expose the site to search engines and AI assistants, and the post-deploy checklist |
 
 ---
 
@@ -135,23 +138,26 @@ prisma/
   content/               Hand-authored curriculum, lexicon, placement bank, exams
 src/
   app/
+    (marketing)/         Public, crawlable pages: landing, about, features, levels, FAQ
     (auth)/              Login, registration
     (app)/               Authenticated application (14 pages)
     api/                 30 route handlers
+    robots.ts, sitemap.ts, llms.txt/, opengraph-image.tsx
   components/            UI primitives, exercise renderers, lesson player, exam runner
   hooks/                 Web Speech wrappers
   lib/
     ai/                  Provider, prompts, response validation, rules engine
     services/            Transactional progress and challenge logic
     speech/              Pronunciation scoring
+    site.ts, seo.ts, llms.ts, site-content.ts   Public identity, metadata, llms.txt, page content
     srs.ts               Spaced repetition scheduler
     placement.ts         IRT placement engine
     grading.ts           Deterministic grading for every exercise type
     gamification.ts      XP, levels, streaks, badges
 tools/
   mcp/openai/            MCP server: lets Claude Code consult GPT during development
-docs/                    Eleven documents
-scripts/smoke.sh         56-check end-to-end test
+docs/                    Twelve documents
+scripts/smoke.sh         67-check end-to-end test
 ```
 
 ---

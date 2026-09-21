@@ -250,6 +250,36 @@ check "replaying the same mutation is idempotent" "$([ "$(echo "$SYNC2" | field 
 BUNDLE=$(req GET /api/sync)
 check "the offline study bundle is downloadable" "$([ -n "$(echo "$BUNDLE" | field cachedAt)" ] && echo true || echo false)"
 
+# ------------------------------------------------------ discoverability
+echo
+echo "Discoverability"
+# Everything in this section is fetched without the cookie jar: it is what a
+# search engine or an AI crawler sees.
+ROBOTS=$(curl -sS "$BASE/robots.txt")
+check "robots.txt is served and points at the sitemap" "$(echo "$ROBOTS" | grep -q '^Sitemap: ' && echo true || echo false)"
+check "robots.txt admits AI crawlers by name" "$(echo "$ROBOTS" | grep -q '^User-Agent: GPTBot' && echo "$ROBOTS" | grep -q '^User-Agent: ClaudeBot' && echo true || echo false)"
+check "robots.txt keeps the API and the app out of the index" "$(echo "$ROBOTS" | grep -q '^Disallow: /api/' && echo "$ROBOTS" | grep -q '^Disallow: /dashboard' && echo true || echo false)"
+
+SITEMAP=$(curl -sS "$BASE/sitemap.xml")
+check "sitemap.xml lists the information pages" "$(echo "$SITEMAP" | grep -q '/about</loc>' && echo "$SITEMAP" | grep -q '/faq</loc>' && echo true || echo false)"
+check "sitemap.xml lists no private route" "$(echo "$SITEMAP" | grep -q '/dashboard' && echo false || echo true)"
+
+LLMS=$(curl -sS "$BASE/llms.txt")
+check "llms.txt is served in the llms.txt format" "$(echo "$LLMS" | head -1 | grep -q '^# ' && echo "$LLMS" | grep -q '^## Pages' && echo true || echo false)"
+LLMS_FULL=$(curl -sS "$BASE/llms-full.txt")
+check "llms-full.txt carries the FAQ" "$(echo "$LLMS_FULL" | grep -q '^## Frequently asked questions' && echo true || echo false)"
+
+for page in /about /features /levels /how-it-works /exam-preparation /faq; do
+  CODE=$(curl -sS -o /dev/null -w '%{http_code}' "$BASE$page")
+  check "$page is public ($CODE)" "$([ "$CODE" = "200" ] && echo true || echo false)"
+done
+ABOUT=$(curl -sS "$BASE/about")
+check "public pages carry canonical URL and structured data" "$(echo "$ABOUT" | grep -q 'rel="canonical"' && echo "$ABOUT" | grep -q 'application/ld+json' && echo true || echo false)"
+OG=$(curl -sS -o /dev/null -w '%{http_code}' "$BASE/opengraph-image")
+check "the Open Graph image renders ($OG)" "$([ "$OG" = "200" ] && echo true || echo false)"
+PRIVATE=$(curl -sS -o /dev/null -w '%{http_code}' "$BASE/dashboard")
+check "private pages still redirect anonymous visitors ($PRIVATE)" "$([ "$PRIVATE" = "307" ] || [ "$PRIVATE" = "302" ] && echo true || echo false)"
+
 # ------------------------------------------------------------ security
 echo
 echo "Security"
