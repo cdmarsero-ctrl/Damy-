@@ -34,6 +34,10 @@ const nextConfig: NextConfig = {
   async headers() {
     return [
       { source: "/:path*", headers: securityHeaders },
+      // The API is for the app, not for search engines or AI crawlers. The
+      // header (rather than robots.txt alone) also covers responses that a
+      // crawler reaches by following a link.
+      { source: "/api/:path*", headers: [{ key: "X-Robots-Tag", value: "noindex, nofollow" }] },
       {
         source: "/sw.js",
         headers: [

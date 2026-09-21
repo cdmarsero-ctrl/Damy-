@@ -1,8 +1,18 @@
 import type { Metadata, Viewport } from "next";
 import { Inter, Source_Serif_4 } from "next/font/google";
 
+import { JsonLd } from "@/components/layout/json-ld";
 import { ThemeScript } from "@/components/layout/theme-script";
-import { APP_NAME } from "@/lib/env";
+import { siteJsonLd } from "@/lib/seo";
+import {
+  SITE_AUTHOR,
+  SITE_DESCRIPTION,
+  SITE_KEYWORDS,
+  SITE_LOCALE,
+  SITE_NAME,
+  SITE_TAGLINE,
+  SITE_URL,
+} from "@/lib/site";
 import "./globals.css";
 
 const inter = Inter({
@@ -17,24 +27,61 @@ const serif = Source_Serif_4({
   display: "swap",
 });
 
+/**
+ * Site-wide metadata. `metadataBase` is what turns every relative canonical
+ * and Open Graph URL into an absolute one, so NEXT_PUBLIC_APP_URL must be the
+ * real public origin in production. Public pages refine these values through
+ * `pageMetadata()`; private pages inherit them and are never indexed anyway.
+ */
 export const metadata: Metadata = {
+  metadataBase: new URL(SITE_URL),
   title: {
-    default: `${APP_NAME} — Advanced English, B2 to C2`,
-    template: `%s · ${APP_NAME}`,
+    default: `${SITE_NAME} — ${SITE_TAGLINE}`,
+    template: `%s · ${SITE_NAME}`,
   },
-  description:
-    "An adaptive, AI-powered platform for advanced English learners. Idiom, academic writing, professional communication, exam preparation and near-native fluency at CEFR B2, C1 and C2.",
-  applicationName: APP_NAME,
+  description: SITE_DESCRIPTION,
+  keywords: SITE_KEYWORDS,
+  applicationName: SITE_NAME,
+  category: "education",
+  ...(SITE_AUTHOR.name
+    ? {
+        authors: [{ name: SITE_AUTHOR.name, ...(SITE_AUTHOR.url ? { url: SITE_AUTHOR.url } : {}) }],
+        creator: SITE_AUTHOR.name,
+        publisher: SITE_AUTHOR.name,
+      }
+    : { publisher: SITE_NAME }),
+  alternates: { canonical: "/" },
   manifest: "/manifest.webmanifest",
-  appleWebApp: { capable: true, title: APP_NAME, statusBarStyle: "black-translucent" },
+  appleWebApp: { capable: true, title: SITE_NAME, statusBarStyle: "black-translucent" },
   formatDetection: { telephone: false },
   openGraph: {
     type: "website",
-    title: `${APP_NAME} — Advanced English, B2 to C2`,
+    siteName: SITE_NAME,
+    locale: SITE_LOCALE === "en" ? "en_GB" : SITE_LOCALE,
+    url: "/",
+    title: `${SITE_NAME} — ${SITE_TAGLINE}`,
     description:
       "Adaptive placement, spaced repetition, an AI conversation partner and exam preparation for advanced English learners.",
   },
-  robots: { index: true, follow: true },
+  twitter: {
+    card: "summary_large_image",
+    title: `${SITE_NAME} — ${SITE_TAGLINE}`,
+    description:
+      "Adaptive placement, spaced repetition, an AI conversation partner and exam preparation for advanced English learners.",
+  },
+  robots: {
+    index: true,
+    follow: true,
+    // Let search engines and AI answer engines quote as much as they need:
+    // a truncated snippet is how a product gets described wrongly.
+    googleBot: {
+      index: true,
+      follow: true,
+      "max-snippet": -1,
+      "max-image-preview": "large",
+      "max-video-preview": -1,
+    },
+  },
 };
 
 export const viewport: Viewport = {
@@ -50,9 +97,14 @@ export const viewport: Viewport = {
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en" suppressHydrationWarning className={`${inter.variable} ${serif.variable}`}>
+    <html
+      lang={SITE_LOCALE}
+      suppressHydrationWarning
+      className={`${inter.variable} ${serif.variable}`}
+    >
       <head>
         <ThemeScript />
+        <JsonLd data={siteJsonLd()} />
       </head>
       <body>
         <a href="#main" className="skip-link">

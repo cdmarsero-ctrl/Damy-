@@ -1,6 +1,8 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { jwtVerify } from "jose/jwt/verify";
 
+import { PUBLIC_PAGES, PUBLIC_RESOURCE_PATHS } from "@/lib/site";
+
 /**
  * Edge middleware: a cheap gate, not the authorisation boundary.
  *
@@ -17,8 +19,24 @@ import { jwtVerify } from "jose/jwt/verify";
 // unsupported in the Edge Runtime. We only sign and verify JWS.
 const ACCESS_COOKIE = "lx_at";
 
-const PUBLIC_PATHS = ["/", "/login", "/register"];
-const PUBLIC_PREFIXES = ["/api/auth/", "/_next/", "/favicon", "/manifest", "/sw.js", "/icons/"];
+// Public pages and machine-readable resources (robots.txt, sitemap.xml,
+// llms.txt, the Open Graph image) come from the same registry that builds the
+// sitemap and the navigation, so a page cannot be listed for crawlers and
+// then bounce them to /login.
+const PUBLIC_PATHS: readonly string[] = [
+  ...PUBLIC_PAGES.map((page) => page.path),
+  ...PUBLIC_RESOURCE_PATHS,
+];
+const PUBLIC_PREFIXES = [
+  "/api/auth/",
+  "/_next/",
+  "/favicon",
+  "/manifest",
+  "/sw.js",
+  "/icons/",
+  "/opengraph-image",
+  "/.well-known/",
+];
 
 function isPublic(pathname: string): boolean {
   if (PUBLIC_PATHS.includes(pathname)) return true;

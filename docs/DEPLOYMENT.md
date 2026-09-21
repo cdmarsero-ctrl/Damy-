@@ -17,6 +17,9 @@
 - [ ] `RATE_LIMIT_*` tuned for your traffic, and [Redis-backed](EXTENDING.md#rate-limiting)
       if you run more than one instance.
 - [ ] Database backups configured and a restore actually tested.
+- [ ] `NEXT_PUBLIC_APP_URL` is the real `https://` origin, and the sitemap has been
+      submitted to Google Search Console and Bing Webmaster Tools. See
+      [AI-DISCOVERABILITY.md](AI-DISCOVERABILITY.md#after-deploying-the-checklist).
 - [ ] The demo account is absent. The seed skips it when `NODE_ENV=production` unless
       `SEED_DEMO_USER=true`; verify with
       `SELECT 1 FROM "User" WHERE email = 'demo@lexicon.app'`.
@@ -37,7 +40,12 @@
 | `RATE_LIMIT_AUTH_PER_MIN` | no | `10` | Per IP |
 | `RATE_LIMIT_AI_PER_MIN` | no | `20` | Per user |
 | `NEXT_PUBLIC_APP_NAME` | no | `Lexicon` | |
-| `NEXT_PUBLIC_APP_URL` | no | `http://localhost:3000` | Used in metadata |
+| `NEXT_PUBLIC_APP_URL` | no | `http://localhost:3000` | **Set to the real public origin in production.** Canonical URLs, sitemap, Open Graph and JSON-LD all derive from it |
+| `NEXT_PUBLIC_AUTHOR_NAME` | no | `""` | Published on /about, in the footer, `<meta name="author">` and JSON-LD |
+| `NEXT_PUBLIC_AUTHOR_URL` | no | `""` | Link for the author name |
+| `NEXT_PUBLIC_CONTACT_EMAIL` | no | `""` | Public contact address |
+| `NEXT_PUBLIC_SOCIAL_LINKS` | no | `""` | Comma-separated profile URLs, published as JSON-LD `sameAs` |
+| `NEXT_PUBLIC_SOURCE_URL` | no | `""` | Public repository, linked from /about and llms.txt |
 
 Validation happens at first access through `src/lib/env.ts`, and a missing or too-short
 `AUTH_SECRET` fails loudly with an actionable message rather than starting an insecure
