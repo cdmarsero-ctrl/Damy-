@@ -106,6 +106,7 @@ unauthenticated access, weak passwords and stale sessions are all rejected.
 | [docs/ACCESSIBILITY.md](docs/ACCESSIBILITY.md) | The WCAG 2.1 conformance position, feature by feature |
 | [docs/SECURITY.md](docs/SECURITY.md) | Threat model, auth design, and what is deliberately not implemented |
 | [docs/MCP-OPENAI.md](docs/MCP-OPENAI.md) | Consulting GPT from a Claude Code session through the bundled MCP server |
+| [docs/CO-PILOTO.md](docs/CO-PILOTO.md) | The Co-piloto skill for live AI creative duels: setup, commands and shortcuts (in Spanish) |
 
 ---
 
@@ -150,7 +151,9 @@ src/
     gamification.ts      XP, levels, streaks, badges
 tools/
   mcp/openai/            MCP server: lets Claude Code consult GPT during development
-docs/                    Eleven documents
+.claude/skills/
+  co-piloto/             Claude skill: creative copilot for live AI duels
+docs/                    Twelve documents
 scripts/smoke.sh         56-check end-to-end test
 ```
 
