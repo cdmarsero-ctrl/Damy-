@@ -6,7 +6,7 @@ WORKDIR /agent
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY protocol.py tone.py main.py ./
+COPY *.py ./
 
 # Health/metrics HTTP server used by orchestrators to check the worker.
 EXPOSE 8081

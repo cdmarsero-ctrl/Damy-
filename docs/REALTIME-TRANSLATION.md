@@ -441,6 +441,15 @@ outstanding. See `agents/interpreter/README.md`.
 2. Client: caption view with stable (final) and unstable (partial) styling.
 3. **Exit criteria:** source captions within 300 ms p50 of speech.
 
+**Status: built.** The agent gates the learner's microphone with Silero VAD, streams it
+to Deepgram over its own thin WebSocket client (`agents/interpreter/asr.py`) and sends
+interim and final captions on `interpreter.captions`; the page renders committed text and
+the revising tail differently and breaks lines at utterance ends. Caption latency is
+measured on the agent from audio *arrival* to caption send, so gating delay counts. Verified
+end to end with a fake Deepgram (`tests/fake_deepgram.py`): with 200 ms of simulated
+recognition time the page reports 203 ms. Real Deepgram latency and accuracy still need a
+run with an API key.
+
 ### Phase 3 — Simultaneous translation (2 weeks)
 1. Implement the commit policy (§4.3) as a **pure, unit-tested module** — feed it scripted
    sequences of partial/final hypotheses and assert committed output is append-only and

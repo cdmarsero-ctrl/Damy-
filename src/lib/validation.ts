@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+import { CAPTION_LANGUAGE_CODES } from "./interpreter/protocol";
+
 /**
  * Every API input is parsed through a schema here. Route handlers never touch
  * `req.json()` directly — see src/lib/api.ts#parseBody.
@@ -165,6 +167,12 @@ export const pronunciationSchema = z.object({
   transcript: z.string().trim().max(4000),
   durationMs: z.number().int().min(0).max(10 * 60 * 1000),
   accent: accentSchema.default("UK"),
+});
+
+// --- live interpreter -------------------------------------------------------
+
+export const interpreterSessionSchema = z.object({
+  sourceLanguage: z.enum(CAPTION_LANGUAGE_CODES).default("multi"),
 });
 
 // --- exams ------------------------------------------------------------------

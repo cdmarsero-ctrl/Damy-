@@ -1,0 +1,202 @@
+"""Phase 2: live captions of the learner's speech.
+
+    mic track (16 kHz) -> Silero VAD -> speech gate -> Deepgram streaming
+                                                         |
+    data channel ("interpreter.captions") <- CaptionTracker <-+
+
+One Captioner per learner microphone. Status is published as agent
+participant attributes so the client always knows whether captions are live.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+import time
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
+
+import aiohttp
+from livekit import rtc
+from livekit.agents import vad as agents_vad
+
+from asr import SAMPLE_RATE, DeepgramError, DeepgramStream, listen_url
+from captions import ArrivalClock, AsrResult, CaptionTracker, UtteranceEnd, parse_deepgram
+from gate import SpeechGate
+
+logger = logging.getLogger("interpreter.captions")
+
+FRAME_MS = 20
+# Enough to cover the VAD's decision delay plus the soft onset of a word.
+PREROLL_MS = 500
+# Deepgram closes a stream after ~10 s with neither audio nor a KeepAlive.
+KEEPALIVE_S = 5.0
+# Audio held while (re)connecting. Older audio is dropped: captions for speech
+# from many seconds ago would arrive too late to be useful.
+MAX_QUEUED_S = 5.0
+# Bounded inbound queue, for the same reason as the echo path in main.py.
+STREAM_CAPACITY_FRAMES = 25
+RECONNECT_DELAYS_S = (0.5, 1, 2, 4, 8)
+STABLE_STREAM_S = 10.0
+
+Publish = Callable[[dict], Awaitable[None]]
+SetStatus = Callable[[str, str], Awaitable[None]]
+
+
+@dataclass(frozen=True)
+class Chunk:
+    pcm: bytes
+    samples: int
+    arrived_at: float
+
+
+_FINALIZE = object()
+
+
+class Captioner:
+    def __init__(
+        self,
+        *,
+        vad: agents_vad.VAD,
+        api_key: str,
+        base_url: str,
+        language: str,
+        publish: Publish,
+        set_status: SetStatus,
+    ) -> None:
+        self._vad = vad
+        self._api_key = api_key
+        self._url = listen_url(base_url, language)
+        self._publish = publish
+        self._set_status = set_status
+        self._gate: SpeechGate[Chunk] = SpeechGate(PREROLL_MS // FRAME_MS)
+        self._queue: asyncio.Queue[Chunk | object] = asyncio.Queue()
+        self._max_queued = int(MAX_QUEUED_S * 1000 / FRAME_MS)
+        self._clock = ArrivalClock(SAMPLE_RATE)
+        self._tracker = CaptionTracker()
+
+    async def run(self, track: rtc.Track) -> None:
+        await self._set_status("starting", "")
+        vad_stream = self._vad.stream()
+        audio = rtc.AudioStream(
+            track,
+            sample_rate=SAMPLE_RATE,
+            num_channels=1,
+            frame_size_ms=FRAME_MS,
+            capacity=STREAM_CAPACITY_FRAMES,
+        )
+        tasks = [
+            asyncio.create_task(self._read_audio(audio, vad_stream), name="captions-audio"),
+            asyncio.create_task(self._read_vad(vad_stream), name="captions-vad"),
+        ]
+        try:
+            async with aiohttp.ClientSession(trust_env=True) as session:
+                await self._asr_loop(session)
+        finally:
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            await audio.aclose()
+            await vad_stream.aclose()
+
+    # --------------------------------------------------------------- input
+
+    async def _read_audio(self, audio: rtc.AudioStream, vad_stream: agents_vad.VADStream) -> None:
+        async for event in audio:
+            frame = event.frame
+            vad_stream.push_frame(frame)
+            chunk = Chunk(bytes(frame.data), frame.samples_per_channel, time.monotonic())
+            for item in self._gate.push(chunk):
+                self._enqueue(item)
+
+    async def _read_vad(self, vad_stream: agents_vad.VADStream) -> None:
+        async for event in vad_stream:
+            if event.type == agents_vad.VADEventType.START_OF_SPEECH:
+                for item in self._gate.start():
+                    self._enqueue(item)
+            elif event.type == agents_vad.VADEventType.END_OF_SPEECH:
+                if self._gate.stop():
+                    # Don't wait for Deepgram's endpointing: the VAD already
+                    # knows the learner stopped, so ask for the final now.
+                    self._enqueue(_FINALIZE)
+
+    def _enqueue(self, item: Chunk | object) -> None:
+        if self._queue.qsize() >= self._max_queued:
+            self._queue.get_nowait()
+        self._queue.put_nowait(item)
+
+    # ----------------------------------------------------------------- ASR
+
+    async def _asr_loop(self, session: aiohttp.ClientSession) -> None:
+        failures = 0
+        while True:
+            stream = DeepgramStream(session, self._api_key, self._url)
+            try:
+                await stream.connect()
+            except DeepgramError as err:
+                if err.auth:
+                    logger.error("deepgram rejected the API key")
+                    await self._set_status("error", "The speech-recognition service rejected the agent's API key.")
+                    return
+                delay = RECONNECT_DELAYS_S[min(failures, len(RECONNECT_DELAYS_S) - 1)]
+                failures += 1
+                logger.warning("deepgram connect failed (%s); retrying in %ss", err, delay)
+                await self._set_status("error", "Can't reach the speech-recognition service; retrying.")
+                await asyncio.sleep(delay)
+                continue
+
+            connected_at = time.monotonic()
+            self._clock.reset()
+            await self._set_status("live", "")
+            sender = asyncio.create_task(self._send(stream), name="captions-send")
+            try:
+                async for raw in stream.messages():
+                    await self._on_message(raw)
+                logger.info("deepgram stream ended; reconnecting")
+            except DeepgramError as err:
+                logger.warning("deepgram stream failed (%s); reconnecting", err)
+            finally:
+                sender.cancel()
+                await asyncio.gather(sender, return_exceptions=True)
+                await stream.close()
+
+            if (message := self._tracker.on_reconnect()) is not None:
+                await self._publish(message)
+            await self._set_status("starting", "Reconnecting to speech recognition…")
+            # A stream that survived a while earns an immediate retry; one that
+            # dies straight after connecting backs off like a failed connect.
+            if time.monotonic() - connected_at > STABLE_STREAM_S:
+                failures = 0
+            else:
+                await asyncio.sleep(RECONNECT_DELAYS_S[min(failures, len(RECONNECT_DELAYS_S) - 1)])
+                failures += 1
+
+    async def _send(self, stream: DeepgramStream) -> None:
+        while True:
+            try:
+                item = await asyncio.wait_for(self._queue.get(), timeout=KEEPALIVE_S)
+            except asyncio.TimeoutError:
+                await stream.keepalive()
+                continue
+            if item is _FINALIZE:
+                await stream.finalize()
+            else:
+                assert isinstance(item, Chunk)
+                self._clock.record(item.samples, item.arrived_at)
+                await stream.send_audio(item.pcm)
+
+    async def _on_message(self, raw: str) -> None:
+        event = parse_deepgram(raw)
+        if isinstance(event, AsrResult):
+            latency_ms = None
+            if event.audio_end is not None:
+                arrived = self._clock.arrival_of(event.audio_end)
+                if arrived is not None:
+                    latency_ms = (time.monotonic() - arrived) * 1000
+            message = self._tracker.on_result(event, latency_ms)
+        elif isinstance(event, UtteranceEnd):
+            message = self._tracker.on_utterance_end()
+        else:
+            message = None
+        if message is not None:
+            await self._publish(message)

@@ -6,7 +6,15 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import protocol  # noqa: E402
-from protocol import MAX_TONE_MS, Ping, ToneRequest, decode_control, encode_pong  # noqa: E402
+from protocol import (  # noqa: E402
+    CAPTION_LANGUAGES,
+    MAX_TONE_MS,
+    Ping,
+    ToneRequest,
+    decode_control,
+    encode_pong,
+    source_language,
+)
 from tone import SAMPLES_PER_FRAME, TONE_DBFS, tone_frames  # noqa: E402
 
 REPO = Path(__file__).resolve().parents[3]
@@ -18,6 +26,26 @@ def test_names_match_the_typescript_side():
     for name in ("mic", "probe", "echo-mic", "echo-probe", "tone"):
         assert f'"{name}"' in ts
     assert protocol.ECHOED_TRACKS == {"mic": "echo-mic", "probe": "echo-probe"}
+    assert f'CAPTIONS_TOPIC = "{protocol.CAPTIONS_TOPIC}"' in ts
+    for attr in (protocol.ATTR_CAPTIONS, protocol.ATTR_CAPTIONS_DETAIL):
+        assert f'"{attr}"' in ts
+
+
+def test_caption_languages_match_the_web_app():
+    ts = (REPO / "src/lib/interpreter/protocol.ts").read_text()
+    listed = ts.split("CAPTION_LANGUAGES = [", 1)[1].split("]", 1)[0]
+    codes = [line.split('code: "', 1)[1].split('"', 1)[0] for line in listed.splitlines() if 'code: "' in line]
+    assert tuple(codes) == CAPTION_LANGUAGES
+
+
+def test_source_language_falls_back_safely():
+    assert source_language('{"sourceLanguage":"es"}') == "es"
+    assert source_language('{"sourceLanguage":"xx"}') == "multi"
+    assert source_language('{"sourceLanguage":"en&model=other"}') == "multi"
+    assert source_language("") == "multi"
+    assert source_language(None) == "multi"
+    assert source_language("not json") == "multi"
+    assert source_language("[1]") == "multi"
 
 
 def test_ping_round_trip_echoes_client_timestamp():

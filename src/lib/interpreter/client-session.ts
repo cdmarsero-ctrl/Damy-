@@ -1,7 +1,7 @@
 import {
   ConnectionState,
   RemoteAudioTrack,
-  type RemoteParticipant,
+  RemoteParticipant,
   type RemoteTrack,
   type RemoteTrackPublication,
   Room,
@@ -12,6 +12,7 @@ import {
 import { api, ApiClientError } from "@/lib/client";
 
 import { assessCapture, CAPTURE_CONSTRAINTS, type CaptureCheck, tryUpgradeToSystemWideAec } from "./aec";
+import { applyCaption, CAPTION_TARGET_MS, type CaptionState, EMPTY_CAPTIONS } from "./captions";
 import {
   assessLeak,
   isOnset,
@@ -20,21 +21,33 @@ import {
   rmsDb,
   summariseLatency,
 } from "./measure";
-import { CONTROL_TOPIC, type ControlMessage, decodeControl, encodeControl, TRACK } from "./protocol";
+import {
+  AGENT_ATTR,
+  CAPTIONS_TOPIC,
+  type CaptionLanguage,
+  type CaptionsStatus,
+  CONTROL_TOPIC,
+  type ControlMessage,
+  decodeCaption,
+  decodeControl,
+  encodeControl,
+  TRACK,
+} from "./protocol";
 
 /**
- * Browser side of the Phase 1 loopback: capture with verified AEC, join the
- * LiveKit room, publish the mic, and play back what the agent returns.
+ * Browser side of an interpreter session: capture with verified AEC, join the
+ * LiveKit room, publish the mic, show the agent's live captions (Phase 2),
+ * and run the Phase 1 diagnostics (loopback timing, echo test).
  *
  * Kept outside React so the media lifecycle (tracks, AudioContext, timers,
  * room) lives in one object with one `stop()`, and the component only
- * renders snapshots of `LoopbackState`.
+ * renders snapshots of `SessionState`.
  */
 
 export type Phase = "idle" | "starting" | "waiting-agent" | "live" | "ended" | "error";
 export type Busy = "timing" | "aec" | null;
 
-export interface LoopbackState {
+export interface SessionState {
   phase: Phase;
   error: string | null;
   capture: CaptureCheck | null;
@@ -48,6 +61,12 @@ export interface LoopbackState {
   busy: Busy;
   monitor: boolean;
   micLevelDb: number;
+  captions: CaptionState;
+  /** From the agent's attributes; null until the agent has joined. */
+  captionsStatus: CaptionsStatus | null;
+  captionsDetail: string;
+  /** Agent-measured caption latency, p50, against the Phase 2 target. */
+  captionLatency: LatencySummary | null;
 }
 
 const AGENT_JOIN_TIMEOUT_MS = 15_000;
@@ -65,7 +84,7 @@ const TONE_SETTLE_MS = 500;
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-export const INITIAL_STATE: LoopbackState = {
+export const INITIAL_STATE: SessionState = {
   phase: "idle",
   error: null,
   capture: null,
@@ -76,10 +95,16 @@ export const INITIAL_STATE: LoopbackState = {
   busy: null,
   monitor: false,
   micLevelDb: -100,
+  captions: EMPTY_CAPTIONS,
+  captionsStatus: null,
+  captionsDetail: "",
+  captionLatency: null,
 };
 
-export class LoopbackSession {
-  private state: LoopbackState = { ...INITIAL_STATE };
+const CAPTIONS_STATUSES: readonly string[] = ["starting", "live", "unavailable", "error"];
+
+export class InterpreterClient {
+  private state: SessionState = { ...INITIAL_STATE };
   private room: Room | null = null;
   private mic: MediaStreamTrack | null = null;
   private ctx: AudioContext | null = null;
@@ -94,14 +119,14 @@ export class LoopbackSession {
   private nextPingId = 1;
   private stopped = false;
 
-  constructor(private readonly onChange: (state: LoopbackState) => void) {}
+  constructor(private readonly onChange: (state: SessionState) => void) {}
 
-  private set(patch: Partial<LoopbackState>) {
+  private set(patch: Partial<SessionState>) {
     this.state = { ...this.state, ...patch };
     this.onChange(this.state);
   }
 
-  async start() {
+  async start(sourceLanguage: CaptionLanguage) {
     this.set({ ...INITIAL_STATE, phase: "starting" });
     try {
       // Must run inside the click handler's user gesture, or autoplay policy
@@ -110,7 +135,9 @@ export class LoopbackSession {
       await this.ctx.resume();
 
       await this.captureMic();
-      const session = await api.post<{ url: string; token: string }>("/api/interpreter/session");
+      const session = await api.post<{ url: string; token: string }>("/api/interpreter/session", {
+        sourceLanguage,
+      });
       if (this.stopped) return;
 
       const room = new Room({ adaptiveStream: false, dynacast: false, webAudioMix: false });
@@ -119,6 +146,9 @@ export class LoopbackSession {
         .on(RoomEvent.TrackSubscribed, (track, pub) => this.onTrack(track, pub))
         .on(RoomEvent.TrackUnsubscribed, (track) => track.detach().forEach((el) => el.remove()))
         .on(RoomEvent.DataReceived, (payload, _p, _k, topic) => this.onData(payload, topic))
+        .on(RoomEvent.ParticipantAttributesChanged, (_changed, p) => {
+          if (p instanceof RemoteParticipant && p.isAgent) this.readAgentAttributes(p);
+        })
         .on(RoomEvent.ParticipantDisconnected, (p) => {
           if (p.isAgent) this.fail("The interpreter agent left the session.");
         })
@@ -186,8 +216,12 @@ export class LoopbackSession {
 
   private waitForAgent(): Promise<void> {
     const room = this.room!;
-    const present = () => [...room.remoteParticipants.values()].some((p) => p.isAgent);
-    if (present()) return Promise.resolve();
+    const agent = () => [...room.remoteParticipants.values()].find((p) => p.isAgent);
+    const existing = agent();
+    if (existing) {
+      this.readAgentAttributes(existing);
+      return Promise.resolve();
+    }
     return new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {
         room.off(RoomEvent.ParticipantConnected, onJoin);
@@ -199,6 +233,7 @@ export class LoopbackSession {
       }, AGENT_JOIN_TIMEOUT_MS);
       const onJoin = (p: RemoteParticipant) => {
         if (!p.isAgent) return;
+        this.readAgentAttributes(p);
         clearTimeout(timeout);
         room.off(RoomEvent.ParticipantConnected, onJoin);
         resolve();
@@ -227,7 +262,29 @@ export class LoopbackSession {
     }
   }
 
+  private readAgentAttributes(agent: RemoteParticipant) {
+    const status = agent.attributes[AGENT_ATTR.captions];
+    if (status === undefined) return;
+    this.set({
+      captionsStatus: CAPTIONS_STATUSES.includes(status) ? (status as CaptionsStatus) : "error",
+      captionsDetail: agent.attributes[AGENT_ATTR.captionsDetail] ?? "",
+    });
+  }
+
   private onData(payload: Uint8Array, topic?: string) {
+    if (topic === CAPTIONS_TOPIC) {
+      const caption = decodeCaption(payload);
+      if (!caption) return;
+      const captions = applyCaption(this.state.captions, caption);
+      this.set({
+        captions,
+        captionLatency:
+          captions.latencies === this.state.captions.latencies
+            ? this.state.captionLatency
+            : summariseLatency(captions.latencies, CAPTION_TARGET_MS),
+      });
+      return;
+    }
     if (topic !== CONTROL_TOPIC) return;
     const msg = decodeControl(payload);
     if (msg?.type !== "pong") return;

@@ -1,6 +1,7 @@
-import { ApiError, enforceRateLimit, json, requireApiUser, route } from "@/lib/api";
+import { ApiError, enforceRateLimit, json, parseBody, requireApiUser, route } from "@/lib/api";
 import { serverEnv } from "@/lib/env";
 import { createInterpreterSession, liveKitConfig } from "@/lib/interpreter/livekit";
+import { interpreterSessionSchema } from "@/lib/validation";
 
 export const runtime = "nodejs";
 
@@ -16,6 +17,7 @@ export const POST = route(async (req) => {
   const claims = await requireApiUser(req);
   const env = serverEnv();
   enforceRateLimit(req, "interpreter", env.RATE_LIMIT_AI_PER_MIN, claims.sub);
+  const body = await parseBody(req, interpreterSessionSchema);
 
   const config = liveKitConfig(env);
   if (!config) {
@@ -26,6 +28,10 @@ export const POST = route(async (req) => {
     );
   }
 
-  const session = await createInterpreterSession(config, { id: claims.sub, name: claims.name });
+  const session = await createInterpreterSession(
+    config,
+    { id: claims.sub, name: claims.name },
+    { sourceLanguage: body.sourceLanguage },
+  );
   return json(session, { status: 201 });
 });

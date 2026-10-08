@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { AccessToken, RoomAgentDispatch, RoomConfiguration } from "livekit-server-sdk";
 
+import type { CaptionLanguage } from "./protocol";
+
 /**
  * LiveKit session minting for the interpreter.
  *
@@ -47,9 +49,14 @@ export function liveKitConfig(env: {
   return { url, apiKey, apiSecret, agentName: env.INTERPRETER_AGENT_NAME };
 }
 
+export interface SessionOptions {
+  sourceLanguage: CaptionLanguage;
+}
+
 export async function createInterpreterSession(
   config: LiveKitConfig,
   user: { id: string; name: string },
+  options: SessionOptions,
 ): Promise<InterpreterSession> {
   // One fresh room per session: a stale agent or ghost participant from an
   // earlier tab can never end up in the new call.
@@ -60,6 +67,10 @@ export async function createInterpreterSession(
     identity,
     name: user.name,
     ttl: TOKEN_TTL,
+    // Session settings travel in the learner's participant metadata, which
+    // the agent reads when it subscribes to their microphone. Signed into the
+    // token, so the client can't change them after the server validated them.
+    metadata: JSON.stringify(options),
   });
   token.addGrant({
     room,
@@ -67,6 +78,7 @@ export async function createInterpreterSession(
     canPublish: true,
     canSubscribe: true,
     canPublishData: true,
+    canUpdateOwnMetadata: false,
   });
   token.roomConfig = new RoomConfiguration({
     emptyTimeout: EMPTY_TIMEOUT_SEC,

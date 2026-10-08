@@ -1,15 +1,15 @@
-"""Interpreter agent, Phase 1: WebRTC loopback.
+"""Interpreter agent.
 
 Joins each interpreter room the web app dispatches it to and:
 
-* republishes the learner's `mic` and `probe` tracks as `echo-mic` and
-  `echo-probe`, frame by frame, with no added buffering;
-* answers data-channel pings so the client can time the signalling path;
-* plays a test tone on its `tone` track on request, so the client can check
-  that echo cancellation removes audio played back from this agent.
+* Phase 2: captions the learner's `mic` live (Silero VAD -> Deepgram
+  streaming), sending interim and final captions on `interpreter.captions`;
+* Phase 1 diagnostics: republishes `mic` and `probe` as `echo-mic` and
+  `echo-probe`, answers data-channel pings, and plays a test tone on request
+  so the client can check echo cancellation.
 
-Later phases replace the echo with ASR -> simultaneous MT -> TTS, keeping the
-same room, tracks and control topic. See docs/REALTIME-TRANSLATION.md.
+Later phases add simultaneous MT -> TTS on the same room, tracks and topics.
+See docs/REALTIME-TRANSLATION.md.
 
 Run:  python main.py dev     (local, auto-reload)
       python main.py start   (production)
@@ -22,21 +22,33 @@ import logging
 import os
 
 from livekit import rtc
-from livekit.agents import AgentServer, AutoSubscribe, JobContext, cli
+from livekit.agents import AgentServer, AutoSubscribe, JobContext, JobProcess, cli
+from livekit.plugins import silero
 
+from asr import DEEPGRAM_URL
+from captioner import Captioner
 from protocol import (
+    ATTR_CAPTIONS,
+    ATTR_CAPTIONS_DETAIL,
+    CAPTIONS_TOPIC,
     CONTROL_TOPIC,
     ECHOED_TRACKS,
+    TRACK_MIC,
     TRACK_TONE,
     Ping,
     ToneRequest,
     decode_control,
+    encode_message,
     encode_pong,
     encode_tone_started,
+    source_language,
 )
 from tone import FRAME_MS, SAMPLE_RATE, SAMPLES_PER_FRAME, tone_frames
 
 AGENT_NAME = os.environ.get("INTERPRETER_AGENT_NAME", "interpreter")
+DEEPGRAM_API_KEY = os.environ.get("DEEPGRAM_API_KEY", "")
+# Override for self-hosted Deepgram, or tests/fake_deepgram.py locally.
+DEEPGRAM_BASE_URL = os.environ.get("DEEPGRAM_URL", DEEPGRAM_URL)
 
 # Latency at the agent is bounded on both sides of the echo. Input and output
 # run at the same real-time rate, so any backlog a stall creates would never
@@ -49,10 +61,16 @@ STREAM_CAPACITY_FRAMES = 5
 
 logger = logging.getLogger("interpreter")
 
-server = AgentServer()
+def prewarm(proc: JobProcess) -> None:
+    # Loading the ONNX model takes ~0.5 s; do it once per worker process
+    # rather than on every session's critical path.
+    proc.userdata["vad"] = silero.VAD.load()
 
 
-class Loopback:
+server = AgentServer(setup_fnc=prewarm)
+
+
+class InterpreterSession:
     def __init__(self, ctx: JobContext) -> None:
         self.ctx = ctx
         self.room = ctx.room
@@ -60,10 +78,15 @@ class Loopback:
         self.tone_source = rtc.AudioSource(SAMPLE_RATE, 1, queue_size_ms=ECHO_QUEUE_MS)
         self.tone_task: asyncio.Task[None] | None = None
         self.background: set[asyncio.Task[None]] = set()
+        self.captions: dict[str, asyncio.Task[None]] = {}
 
     async def start(self) -> None:
         tone_track = rtc.LocalAudioTrack.create_audio_track(TRACK_TONE, self.tone_source)
         await self.room.local_participant.publish_track(tone_track, publish_options())
+        if not DEEPGRAM_API_KEY:
+            await self.set_captions_status(
+                "unavailable", "Speech recognition is not configured on the agent (DEEPGRAM_API_KEY)."
+            )
 
         self.room.on("track_subscribed", self.on_track_subscribed)
         self.room.on("track_unsubscribed", self.on_track_unsubscribed)
@@ -86,6 +109,8 @@ class Loopback:
     ) -> None:
         if track.kind != rtc.TrackKind.KIND_AUDIO:
             return
+        if publication.name == TRACK_MIC and DEEPGRAM_API_KEY and publication.sid not in self.captions:
+            self.captions[publication.sid] = asyncio.create_task(self.caption(track, participant))
         out_name = ECHOED_TRACKS.get(publication.name)
         if out_name is None or publication.sid in self.echoes:
             return
@@ -98,9 +123,10 @@ class Loopback:
         publication: rtc.RemoteTrackPublication,
         _participant: rtc.RemoteParticipant,
     ) -> None:
-        task = self.echoes.pop(publication.sid, None)
-        if task:
-            task.cancel()
+        for tasks in (self.echoes, self.captions):
+            task = tasks.pop(publication.sid, None)
+            if task:
+                task.cancel()
 
     async def echo(self, track: rtc.Track, out_name: str) -> None:
         source = rtc.AudioSource(SAMPLE_RATE, 1, queue_size_ms=ECHO_QUEUE_MS)
@@ -126,6 +152,44 @@ class Loopback:
                     # The room is closing under us; the server drops the
                     # track with the connection anyway.
                     logger.debug("unpublish of %s skipped during teardown", out_name)
+
+    # ------------------------------------------------------------- captions
+
+    async def caption(self, track: rtc.Track, participant: rtc.RemoteParticipant) -> None:
+        language = source_language(participant.metadata)
+        logger.info("captioning %s in %s", participant.identity, language)
+        identity = participant.identity
+
+        async def publish(message: dict) -> None:
+            # Reliable: finals must arrive, and in order.
+            await self.room.local_participant.publish_data(
+                encode_message(message),
+                reliable=True,
+                destination_identities=[identity],
+                topic=CAPTIONS_TOPIC,
+            )
+
+        captioner = Captioner(
+            vad=self.ctx.proc.userdata["vad"],
+            api_key=DEEPGRAM_API_KEY,
+            base_url=DEEPGRAM_BASE_URL,
+            language=language,
+            publish=publish,
+            set_status=self.set_captions_status,
+        )
+        try:
+            await captioner.run(track)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("captioning failed")
+            await self.set_captions_status("error", "Captioning stopped unexpectedly.")
+
+    async def set_captions_status(self, status: str, detail: str) -> None:
+        if self.room.isconnected():
+            await self.room.local_participant.set_attributes(
+                {ATTR_CAPTIONS: status, ATTR_CAPTIONS_DETAIL: detail}
+            )
 
     # -------------------------------------------------------------- control
 
@@ -170,7 +234,7 @@ class Loopback:
             self.ctx.shutdown(reason="learner left")
 
     async def close(self) -> None:
-        tasks = [*self.echoes.values(), *self.background]
+        tasks = [*self.echoes.values(), *self.captions.values(), *self.background]
         if self.tone_task:
             tasks.append(self.tone_task)
         for task in tasks:
@@ -188,10 +252,10 @@ def publish_options() -> rtc.TrackPublishOptions:
 @server.rtc_session(agent_name=AGENT_NAME)
 async def entrypoint(ctx: JobContext) -> None:
     await ctx.connect(auto_subscribe=AutoSubscribe.AUDIO_ONLY)
-    loopback = Loopback(ctx)
-    ctx.add_shutdown_callback(loopback.close)
-    await loopback.start()
-    logger.info("loopback ready in room %s", ctx.room.name)
+    session = InterpreterSession(ctx)
+    ctx.add_shutdown_callback(session.close)
+    await session.start()
+    logger.info("interpreter ready in room %s", ctx.room.name)
 
 
 if __name__ == "__main__":

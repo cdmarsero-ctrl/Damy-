@@ -12,6 +12,19 @@ from dataclasses import dataclass
 from typing import Union
 
 CONTROL_TOPIC = "interpreter.control"
+# Agent -> client caption stream; see captions.py for the message shapes.
+CAPTIONS_TOPIC = "interpreter.captions"
+
+# Source languages offered for captions. "multi" is Nova-3's code-switching
+# mode, which covers the same ten languages.
+CAPTION_LANGUAGES = ("multi", "en", "es", "fr", "de", "it", "pt", "nl", "ja", "ru", "hi")
+DEFAULT_LANGUAGE = "multi"
+
+# Agent participant attributes. Attributes rather than messages because they
+# are state: a client that joins, reconnects or re-renders reads the current
+# value instead of depending on having caught an earlier message.
+ATTR_CAPTIONS = "captions"  # "starting" | "live" | "unavailable" | "error"
+ATTR_CAPTIONS_DETAIL = "captions.detail"  # human-readable reason, may be ""
 
 TRACK_MIC = "mic"
 TRACK_PROBE = "probe"
@@ -71,6 +84,23 @@ def decode_control(payload: bytes) -> ControlMessage | None:
             return ToneRequest(duration_ms=int(min(duration, MAX_TONE_MS)))
         return None
     return None
+
+
+def source_language(metadata: str | None) -> str:
+    """The learner's chosen caption language from their participant metadata.
+
+    The web app validates this when minting the token; it is checked again
+    here because the agent must not pass arbitrary strings into the ASR URL.
+    """
+    try:
+        value = json.loads(metadata or "{}").get("sourceLanguage")
+    except (ValueError, AttributeError):
+        return DEFAULT_LANGUAGE
+    return value if value in CAPTION_LANGUAGES else DEFAULT_LANGUAGE
+
+
+def encode_message(message: dict) -> bytes:
+    return json.dumps(message, separators=(",", ":")).encode()
 
 
 def encode_pong(ping: Ping) -> bytes:

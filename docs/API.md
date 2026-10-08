@@ -239,12 +239,14 @@ reaches the server.
 
 ### `POST /api/interpreter/session`
 ```jsonc
-// → (no body)
+// → { sourceLanguage?: "multi" | "en" | "es" | "fr" | "de" | "it" | "pt" | "nl" | "ja" | "ru" | "hi" }
 // ← 201 { url, token, room, identity }
 // ← 503 { code: "interpreter_unavailable" } when LIVEKIT_* is not configured
 ```
 Mints a 10-minute, single-room LiveKit token for a fresh room and dispatches the
-interpreter agent into it. The browser joins with `url` + `token`; vendor
+interpreter agent into it. `sourceLanguage` (default `multi`, auto-detect) is the
+caption language; it is signed into the participant metadata, where the agent
+reads it. The browser joins with `url` + `token`; vendor
 credentials never leave the server. Rate-limited per user under the AI limit.
 Audio flows over WebRTC to the agent, not through this API; see
 [REALTIME-TRANSLATION.md](REALTIME-TRANSLATION.md).
