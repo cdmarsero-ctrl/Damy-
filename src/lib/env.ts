@@ -16,6 +16,16 @@ const serverSchema = z.object({
   OPENAI_API_KEY: z.string().optional().default(""),
   OPENAI_MODEL: z.string().default("gpt-4o"),
   OPENAI_BASE_URL: z.string().optional().default(""),
+  // Live interpreter (optional). All three LIVEKIT_* must be set to enable it;
+  // LIVEKIT_URL is the public ws(s):// address browsers connect to.
+  LIVEKIT_URL: z
+    .string()
+    .optional()
+    .default("")
+    .refine((v) => v === "" || /^wss?:\/\//.test(v), "LIVEKIT_URL must start with ws:// or wss://"),
+  LIVEKIT_API_KEY: z.string().optional().default(""),
+  LIVEKIT_API_SECRET: z.string().optional().default(""),
+  INTERPRETER_AGENT_NAME: z.string().min(1).default("interpreter"),
   RATE_LIMIT_AUTH_PER_MIN: z.coerce.number().int().positive().default(10),
   RATE_LIMIT_AI_PER_MIN: z.coerce.number().int().positive().default(20),
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),

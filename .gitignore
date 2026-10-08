@@ -19,3 +19,8 @@ npm-debug.log*
 .idea/
 .vscode/*
 !.vscode/extensions.json
+
+# Python (agents/)
+__pycache__/
+.venv/
+.pytest_cache/

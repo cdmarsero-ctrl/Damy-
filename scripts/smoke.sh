@@ -193,6 +193,15 @@ check "per-word scoring identifies the mismatches" \
   "$([ -n "$(echo "$PRON" | field result.wordScores.0.word)" ] && echo true || echo false)"
 check "targeted advice is returned" "$([ -n "$(echo "$PRON" | field result.tips.0)" ] && echo true || echo false)"
 
+# Either outcome is correct depending on whether the server has LIVEKIT_* set;
+# anything else (500, a token without a room, …) is a failure.
+INTERP_CODE=$(curl -sS -o /tmp/smoke-interp.json -w '%{http_code}' -X POST "$BASE/api/interpreter/session" -b "$JAR" -c "$JAR")
+INTERP=$(cat /tmp/smoke-interp.json); rm -f /tmp/smoke-interp.json
+check "interpreter session is minted or cleanly unavailable ($INTERP_CODE)" "$(
+  { [ "$INTERP_CODE" = "201" ] && [ -n "$(echo "$INTERP" | field token)" ] && [ -n "$(echo "$INTERP" | field room)" ]; } ||
+  { [ "$INTERP_CODE" = "503" ] && [ "$(echo "$INTERP" | field code)" = "interpreter_unavailable" ]; } &&
+  echo true || echo false)"
+
 # -------------------------------------------------------------- exams
 echo
 echo "Exam preparation"

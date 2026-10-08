@@ -29,9 +29,37 @@ services:
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4o}
       NEXT_PUBLIC_APP_URL: ${NEXT_PUBLIC_APP_URL:-http://localhost:3000}
+      LIVEKIT_URL: ${LIVEKIT_URL:-}
+      LIVEKIT_API_KEY: ${LIVEKIT_API_KEY:-}
+      LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET:-}
       NODE_ENV: production
     ports:
       - "3000:3000"
+
+  # Live interpreter (optional): `docker compose --profile interpreter up -d`.
+  # Dev-mode LiveKit uses the well-known devkey/secret pair; never expose it.
+  livekit:
+    profiles: [interpreter]
+    image: livekit/livekit-server:v1.13.7
+    restart: unless-stopped
+    command: --dev --bind 0.0.0.0 --node-ip 127.0.0.1
+    ports:
+      - "7880:7880"     # signalling (ws)
+      - "7881:7881"     # media over TCP fallback
+      - "7882:7882/udp" # media over UDP
+
+  interpreter-agent:
+    profiles: [interpreter]
+    build: ./agents/interpreter
+    restart: unless-stopped
+    depends_on: [livekit]
+    # Shares LiveKit's network namespace: the dev server advertises 127.0.0.1
+    # as its media address, which is only reachable from inside it.
+    network_mode: "service:livekit"
+    environment:
+      LIVEKIT_URL: ws://127.0.0.1:7880
+      LIVEKIT_API_KEY: devkey
+      LIVEKIT_API_SECRET: secret
 
 volumes:
   lexicon-db:

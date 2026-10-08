@@ -341,8 +341,10 @@ if (!s.echoCancellation) degradeToProtectedMode("aec-unavailable");
 ```
 
 Where supported, the newer `echoCancellation: "all"` value (Media Capture extensions)
-asks the browser to cancel *all* system playback, not just WebRTC audio; feature-detect it
-via `navigator.mediaDevices.getSupportedConstraints()` and prefer it when available.
+asks the browser to cancel *all* system playback, not just WebRTC audio.
+`getSupportedConstraints()` only reports constraint *names*, not which values a browser
+accepts, so try it with `applyConstraints()` and read `getSettings()` back; that is what
+`tryUpgradeToSystemWideAec()` in `src/lib/interpreter/aec.ts` does.
 
 Playback:
 
@@ -422,6 +424,16 @@ middle of the pipeline costs more than any model choice.
    track playback, constraint verification, connection state UI.
 4. **Exit criteria:** loopback round-trip < 150 ms; with speakers on, the echoed audio is
    not re-captured (AEC verified on Chrome, Safari, Firefox, iOS, Android).
+
+**Status: built.** The **Live interpreter** page runs the loopback and measures both exit
+criteria in the browser: tone bursts on a separate `probe` track time the audio round
+trip, and a test tone played on the agent's `tone` track checks how much survives echo
+cancellation on the processed mic signal. Measured so far with headless Chromium and
+everything on one container: 140–152 ms median across paced runs (up to ~200 ms with the
+CPU saturated). That covers
+two WebRTC hops and two jitter buffers but not the sound card's own latency, and it has no
+network distance. Real-device runs of the echo test on the browser matrix are still
+outstanding. See `agents/interpreter/README.md`.
 
 ### Phase 2 — Live captions (1 week)
 1. Agent: Silero VAD → Deepgram streaming; publish partial/final source captions over

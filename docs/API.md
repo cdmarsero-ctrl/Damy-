@@ -237,6 +237,18 @@ Planning help offered *before* writing, which is where most learners need it.
 Receives **text, not audio**. The browser transcribes locally, so voice data never
 reaches the server.
 
+### `POST /api/interpreter/session`
+```jsonc
+// → (no body)
+// ← 201 { url, token, room, identity }
+// ← 503 { code: "interpreter_unavailable" } when LIVEKIT_* is not configured
+```
+Mints a 10-minute, single-room LiveKit token for a fresh room and dispatches the
+interpreter agent into it. The browser joins with `url` + `token`; vendor
+credentials never leave the server. Rate-limited per user under the AI limit.
+Audio flows over WebRTC to the agent, not through this API; see
+[REALTIME-TRANSLATION.md](REALTIME-TRANSLATION.md).
+
 ---
 
 ## Exams

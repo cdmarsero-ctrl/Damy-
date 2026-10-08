@@ -1,0 +1,4 @@
+# Pinned: the agent talks to LiveKit over an evolving protocol, so upgrades
+# should be deliberate and re-tested with the loopback console.
+livekit-agents==1.8.2
+livekit==1.1.18
