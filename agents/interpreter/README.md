@@ -5,22 +5,24 @@ The server-side half of the live interpreter
 worker: the web app's `POST /api/interpreter/session` mints a room token that
 dispatches this agent into a fresh room alongside the learner.
 
-**Current stage: Phase 2, live captions**, with the Phase 1 loopback kept as
-connection diagnostics.
+**Current stage: Phase 3, simultaneous translation** of live captions, with
+the Phase 1 loopback kept as connection diagnostics.
 
 | Track or message | Direction | Purpose |
 |---|---|---|
 | `mic` → captions on `interpreter.captions` | learner → agent → learner | Silero VAD gates the audio, Deepgram streams interim and final captions back. |
 | `captions`, `captions.detail` attributes | agent | Caption status (`starting`, `live`, `unavailable`, `error`) and a readable reason. |
+| captions → translation on `interpreter.translation` | agent → learner | Committed (never retracted) and tentative translation per sentence. |
+| `translation`, `translation.detail` attributes | agent | Translation status, same values as captions. |
 | `mic` → `echo-mic` | learner → agent → learner | Hear yourself after the round trip; checks AEC by ear. |
 | `probe` → `echo-probe` | learner → agent → learner | Tone bursts timed by the browser to measure the audio round trip. |
 | `tone` | agent → learner | A test tone played through the speaker for the automated echo test. |
 | `ping` / `pong` on `interpreter.control` | data channel | Signalling round trip. |
 
-The caption language comes from the learner's participant metadata, which the
-web app signs into their token; the agent re-validates it against
-`CAPTION_LANGUAGES`. Later phases add simultaneous MT and TTS on the same
-tracks and topics.
+The caption and translation languages come from the learner's participant
+metadata, which the web app signs into their token; the agent re-validates
+them against `CAPTION_LANGUAGES` and `LANGUAGE_NAMES`. Phase 4 adds streaming
+speech (TTS) of the committed translation.
 
 ### How captioning works
 
@@ -40,6 +42,33 @@ tracks and topics.
   recognised word's audio *arrived at the agent* to the caption being sent.
   Timing from arrival rather than from when audio was sent means delay added
   by the gate is counted too.
+
+### How translation works
+
+- **Sentences** (`translation.py`): the caption stream is split at utterance
+  ends. One worker translates the oldest unfinished sentence, one request at a
+  time; while a request is in flight newer captions just update the source,
+  and the next request takes the newest state. Cancelling on every interim
+  would starve it, because interims arrive faster than a model answers. The
+  one cancellation: when the sentence being translated ends, its stale request
+  is dropped so the final flush starts at once.
+- **Commit policy** (`policy.py`): the model is asked for "the continuation
+  that is safe to say now". Nothing is committed until two consecutive answers
+  agree on it (LocalAgreement-2), a lag ceiling forces a commit when the source
+  runs too far ahead (4 words, 6 when either language is verb-final, ×3 per
+  character for Japanese/Chinese sources), and the final answer for a sentence
+  is committed whole. Committed text only ever grows, which is what will let
+  Phase 4 speak it.
+- **Model** (`mt.py`): Claude Haiku 5.5 by default (`INTERPRETER_MT_MODEL`),
+  streamed, with thinking off. The system prompt (language pair plus worked
+  examples) is byte-identical for a session and carries the cache breakpoint,
+  so each request only processes the short tail fresh. It's long enough to
+  clear the 512-token cacheable minimum; check `cache_read` in the agent's
+  debug log (`mt … usage=`) to confirm caching in production. Earlier
+  sentences go along as context for pronouns, gender and terminology.
+- **Cost shape**: during speech the worker makes back-to-back requests, about
+  one per model response time (3–4 per second at ~250 ms); silence costs
+  nothing.
 
 ## Run it locally
 
@@ -75,13 +104,18 @@ npm run dev
 Then open **Live interpreter** in the app, pick the language you'll speak and
 press **Start**.
 
-**No Deepgram key?** `tests/fake_deepgram.py` stands in for it: it checks the
-request like Deepgram would and streams placeholder words (`word1 word2 …`)
-paced by the audio it receives, so you can exercise the whole caption path.
+**No keys?** Two fakes stand in, so the whole caption and translation path
+runs locally. `tests/fake_deepgram.py` checks requests like Deepgram and streams
+placeholder words (`word1 word2 …`) paced by the audio it receives;
+`tests/fake_anthropic.py` speaks the Messages API's streaming format and
+"translates" them (`palabra1 palabra2 …`), holding back the last word like a
+cautious interpreter.
 
 ```bash
-python tests/fake_deepgram.py --port 8765 --delay-ms 200   # simulated recognition time
-DEEPGRAM_API_KEY=fake DEEPGRAM_URL=ws://127.0.0.1:8765/v1/listen python main.py dev
+python tests/fake_deepgram.py --port 8765 --delay-ms 200    # simulated recognition time
+python tests/fake_anthropic.py --port 8766 --delay-ms 250   # simulated time to first token
+DEEPGRAM_API_KEY=fake DEEPGRAM_URL=ws://127.0.0.1:8765/v1/listen \
+  ANTHROPIC_API_KEY=fake ANTHROPIC_BASE_URL=http://127.0.0.1:8766 python main.py dev
 ```
 
 | Agent variable | Default | |
@@ -89,11 +123,34 @@ DEEPGRAM_API_KEY=fake DEEPGRAM_URL=ws://127.0.0.1:8765/v1/listen python main.py 
 | `LIVEKIT_URL`, `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET` | — | Required. |
 | `DEEPGRAM_API_KEY` | — | Enables captions. |
 | `DEEPGRAM_URL` | `wss://api.deepgram.com/v1/listen` | Self-hosted Deepgram, or the fake. |
+| `ANTHROPIC_API_KEY` | — | Enables translation (needs captions too). |
+| `INTERPRETER_MT_MODEL` | `claude-haiku-5-5` | Translation model. Larger models run at low effort; expect more lag. |
+| `ANTHROPIC_BASE_URL` | Anthropic API | Read by the SDK; for the fake. |
 | `INTERPRETER_AGENT_NAME` | `interpreter` | Must match the app's. |
 
 In `start` (production) mode the worker stops accepting jobs once host CPU
 passes 70 %; `dev` mode doesn't. The LiveKit server applies its own load check
 in both modes, though (see Troubleshooting).
+
+## Phase 3 exit criteria
+
+- **Zero retractions**: committed translation is never taken back. Enforced by
+  construction in `policy.py`, tested with scripted and 200 randomised
+  hypothesis sequences, and counted live on the page (**Retractions**).
+- **Lag within the design targets**: the page's **Translation lag** is the
+  time from the end of a sentence (as captioned) to its complete translation,
+  target ≤ 1200 ms median. Most of each sentence is committed before then.
+- **Quality**: bilingual review and an automatic metric (e.g. COMET) on a test
+  set. Not done yet: it needs real ASR and model output.
+
+Verified so far with both fakes (200 ms recognition, 250 ms to first token)
+and the spoken test clip through Chromium's fake microphone: translation
+commits while each sentence is still being spoken, the page and a DOM watcher
+both counted **0 retractions** over 43 updates, and translation lag was
+**265 ms** median, about one model call, which shows the stale request is
+cancelled at each sentence end. **Real translation quality and Claude latency
+are not yet measured**: that needs an Anthropic key (and a Deepgram key for
+real speech).
 
 ## Phase 2 exit criterion
 
@@ -134,10 +191,11 @@ pip install -r requirements-dev.txt
 pytest tests
 ```
 
-The tests cover the pure modules (protocol, captions, gate, tone), run the
-Deepgram client against `tests/fake_deepgram.py`, and check that the protocol
-constants and caption languages match `src/lib/interpreter/protocol.ts`. They
-need neither LiveKit nor a Deepgram account.
+The tests cover the pure modules (protocol, captions, gate, tone, commit
+policy), drive the translation loop with a scripted translator, run the
+Deepgram client and the Claude adapter (through the real Anthropic SDK)
+against the two fakes, and check that protocol constants and language lists
+match `src/lib/interpreter/protocol.ts`. They need no accounts or servers.
 
 ## Troubleshooting
 
@@ -153,6 +211,12 @@ need neither LiveKit nor a Deepgram account.
   below the target.
 - **Captions say "Problem: rejected the agent's API key"**: `DEEPGRAM_API_KEY`
   is wrong or lacks streaming access. The agent doesn't retry auth failures.
+- **Translation says "Problem: rejected the agent's API key"** (or "can't use
+  the translation model"): check `ANTHROPIC_API_KEY` and
+  `INTERPRETER_MT_MODEL`. These stop translation for the session; captions
+  carry on.
+- **Translation is "unavailable"**: the agent has no `ANTHROPIC_API_KEY`, or
+  no captions to translate (`DEEPGRAM_API_KEY`).
 - **Captions stay on "Starting" / "retrying"**: the agent can't reach
   Deepgram. It uses `HTTPS_PROXY` if set (unlike the LiveKit connection below),
   so check the proxy or `DEEPGRAM_URL`.

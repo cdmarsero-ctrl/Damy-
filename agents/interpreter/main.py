@@ -4,11 +4,14 @@ Joins each interpreter room the web app dispatches it to and:
 
 * Phase 2: captions the learner's `mic` live (Silero VAD -> Deepgram
   streaming), sending interim and final captions on `interpreter.captions`;
+* Phase 3: translates those captions as they form (Claude under an
+  append-only commit policy), sending committed and tentative text on
+  `interpreter.translation`;
 * Phase 1 diagnostics: republishes `mic` and `probe` as `echo-mic` and
   `echo-probe`, answers data-channel pings, and plays a test tone on request
   so the client can check echo cancellation.
 
-Later phases add simultaneous MT -> TTS on the same room, tracks and topics.
+Phase 4 adds streaming speech (TTS) of the committed translation.
 See docs/REALTIME-TRANSLATION.md.
 
 Run:  python main.py dev     (local, auto-reload)
@@ -20,17 +23,24 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+from dataclasses import dataclass
 
+import anthropic
 from livekit import rtc
 from livekit.agents import AgentServer, AutoSubscribe, JobContext, JobProcess, cli
 from livekit.plugins import silero
 
 from asr import DEEPGRAM_URL
 from captioner import Captioner
+from mt import DEFAULT_MODEL, ClaudeTranslator, TranslationError, language_label
 from protocol import (
     ATTR_CAPTIONS,
     ATTR_CAPTIONS_DETAIL,
+    ATTR_TRANSLATION,
+    ATTR_TRANSLATION_DETAIL,
     CAPTIONS_TOPIC,
+    LANGUAGE_NAMES,
+    TRANSLATION_TOPIC,
     CONTROL_TOPIC,
     ECHOED_TRACKS,
     TRACK_MIC,
@@ -42,13 +52,19 @@ from protocol import (
     encode_pong,
     encode_tone_started,
     source_language,
+    target_language,
 )
 from tone import FRAME_MS, SAMPLE_RATE, SAMPLES_PER_FRAME, tone_frames
+from translation import TranslationLoop
 
 AGENT_NAME = os.environ.get("INTERPRETER_AGENT_NAME", "interpreter")
 DEEPGRAM_API_KEY = os.environ.get("DEEPGRAM_API_KEY", "")
 # Override for self-hosted Deepgram, or tests/fake_deepgram.py locally.
 DEEPGRAM_BASE_URL = os.environ.get("DEEPGRAM_URL", DEEPGRAM_URL)
+# Translation. A deployed agent needs an explicit key; ANTHROPIC_BASE_URL
+# (read by the SDK) points it at tests/fake_anthropic.py locally.
+ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
+MT_MODEL = os.environ.get("INTERPRETER_MT_MODEL", DEFAULT_MODEL)
 
 # Latency at the agent is bounded on both sides of the echo. Input and output
 # run at the same real-time rate, so any backlog a stall creates would never
@@ -60,6 +76,13 @@ ECHO_QUEUE_MS = 40
 STREAM_CAPACITY_FRAMES = 5
 
 logger = logging.getLogger("interpreter")
+
+@dataclass
+class _Translation:
+    loop: TranslationLoop
+    task: asyncio.Task[None]
+    client: anthropic.AsyncAnthropic
+
 
 def prewarm(proc: JobProcess) -> None:
     # Loading the ONNX model takes ~0.5 s; do it once per worker process
@@ -86,6 +109,11 @@ class InterpreterSession:
         if not DEEPGRAM_API_KEY:
             await self.set_captions_status(
                 "unavailable", "Speech recognition is not configured on the agent (DEEPGRAM_API_KEY)."
+            )
+            await self.set_translation_status("unavailable", "Translation needs live captions, which are off.")
+        elif not ANTHROPIC_API_KEY:
+            await self.set_translation_status(
+                "unavailable", "Translation is not configured on the agent (ANTHROPIC_API_KEY)."
             )
 
         self.room.on("track_subscribed", self.on_track_subscribed)
@@ -157,17 +185,22 @@ class InterpreterSession:
 
     async def caption(self, track: rtc.Track, participant: rtc.RemoteParticipant) -> None:
         language = source_language(participant.metadata)
-        logger.info("captioning %s in %s", participant.identity, language)
+        target = target_language(participant.metadata)
+        logger.info("captioning %s in %s, translating into %s", participant.identity, language, target)
         identity = participant.identity
 
-        async def publish(message: dict) -> None:
-            # Reliable: finals must arrive, and in order.
+        async def send(topic: str, message: dict) -> None:
+            # Reliable: finals and commits must arrive, and in order.
             await self.room.local_participant.publish_data(
-                encode_message(message),
-                reliable=True,
-                destination_identities=[identity],
-                topic=CAPTIONS_TOPIC,
+                encode_message(message), reliable=True, destination_identities=[identity], topic=topic
             )
+
+        translation = self.start_translation(language, target, lambda m: send(TRANSLATION_TOPIC, m))
+
+        async def publish(message: dict) -> None:
+            await send(CAPTIONS_TOPIC, message)
+            if translation is not None:
+                translation.loop.on_caption(message)
 
         captioner = Captioner(
             vad=self.ctx.proc.userdata["vad"],
@@ -184,12 +217,63 @@ class InterpreterSession:
         except Exception:
             logger.exception("captioning failed")
             await self.set_captions_status("error", "Captioning stopped unexpectedly.")
+        finally:
+            if translation is not None:
+                translation.task.cancel()
+                await asyncio.gather(translation.task, return_exceptions=True)
+                await translation.client.close()
 
     async def set_captions_status(self, status: str, detail: str) -> None:
+        await self._set_attributes({ATTR_CAPTIONS: status, ATTR_CAPTIONS_DETAIL: detail})
+
+    # ---------------------------------------------------------- translation
+
+    def start_translation(self, source: str, target: str | None, publish) -> _Translation | None:
+        if not ANTHROPIC_API_KEY:
+            return None  # status already published in start()
+        if target is None or target == source:
+            self.spawn(self.set_translation_status("unavailable", "No translation language was chosen."))
+            return None
+        client = anthropic.AsyncAnthropic(
+            api_key=ANTHROPIC_API_KEY,
+            # A late translation is a useless one: fail fast and let the next
+            # caption update try again rather than queueing behind a retry.
+            timeout=anthropic.Timeout(10.0, connect=3.0),
+            max_retries=1,
+        )
+        translator = ClaudeTranslator(
+            client,
+            source_label=language_label(source, LANGUAGE_NAMES),
+            target_label=LANGUAGE_NAMES[target],
+            model=MT_MODEL,
+        )
+        loop = TranslationLoop(
+            translate=translator.translate,
+            publish=publish,
+            set_status=self.set_translation_status,
+            source=source,
+            target=target,
+        )
+        task = asyncio.create_task(self._run_translation(loop), name="translation")
+        return _Translation(loop, task, client)
+
+    async def _run_translation(self, loop: TranslationLoop) -> None:
+        try:
+            await loop.run()
+        except asyncio.CancelledError:
+            raise
+        except TranslationError:
+            pass  # permanent; the loop already published the reason
+        except Exception:
+            logger.exception("translation failed")
+            await self.set_translation_status("error", "Translation stopped unexpectedly.")
+
+    async def set_translation_status(self, status: str, detail: str) -> None:
+        await self._set_attributes({ATTR_TRANSLATION: status, ATTR_TRANSLATION_DETAIL: detail})
+
+    async def _set_attributes(self, attributes: dict[str, str]) -> None:
         if self.room.isconnected():
-            await self.room.local_participant.set_attributes(
-                {ATTR_CAPTIONS: status, ATTR_CAPTIONS_DETAIL: detail}
-            )
+            await self.room.local_participant.set_attributes(attributes)
 
     # -------------------------------------------------------------- control
 

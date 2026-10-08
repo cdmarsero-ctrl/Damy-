@@ -239,14 +239,16 @@ reaches the server.
 
 ### `POST /api/interpreter/session`
 ```jsonc
-// → { sourceLanguage?: "multi" | "en" | "es" | "fr" | "de" | "it" | "pt" | "nl" | "ja" | "ru" | "hi" }
+// → { sourceLanguage?: "multi" | "en" | "es" | "fr" | "de" | "it" | "pt" | "nl" | "ja" | "ru" | "hi",
+//     targetLanguage?: "en" | "es" | "fr" | "de" | … (19 codes; see TRANSLATION_LANGUAGES) }
 // ← 201 { url, token, room, identity }
 // ← 503 { code: "interpreter_unavailable" } when LIVEKIT_* is not configured
 ```
 Mints a 10-minute, single-room LiveKit token for a fresh room and dispatches the
 interpreter agent into it. `sourceLanguage` (default `multi`, auto-detect) is the
-caption language; it is signed into the participant metadata, where the agent
-reads it. The browser joins with `url` + `token`; vendor
+caption language and `targetLanguage` (default `es`) the translation language;
+they must differ (422 otherwise). Both are signed into the participant
+metadata, where the agent reads them. The browser joins with `url` + `token`; vendor
 credentials never leave the server. Rate-limited per user under the AI limit.
 Audio flows over WebRTC to the agent, not through this API; see
 [REALTIME-TRANSLATION.md](REALTIME-TRANSLATION.md).

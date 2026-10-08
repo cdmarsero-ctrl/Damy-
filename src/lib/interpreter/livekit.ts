@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { AccessToken, RoomAgentDispatch, RoomConfiguration } from "livekit-server-sdk";
 
-import type { CaptionLanguage } from "./protocol";
+import type { CaptionLanguage, TranslationLanguage } from "./protocol";
 
 /**
  * LiveKit session minting for the interpreter.
@@ -51,6 +51,7 @@ export function liveKitConfig(env: {
 
 export interface SessionOptions {
   sourceLanguage: CaptionLanguage;
+  targetLanguage: TranslationLanguage;
 }
 
 export async function createInterpreterSession(

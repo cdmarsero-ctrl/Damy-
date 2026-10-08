@@ -14,6 +14,7 @@ from protocol import (  # noqa: E402
     decode_control,
     encode_pong,
     source_language,
+    target_language,
 )
 from tone import SAMPLES_PER_FRAME, TONE_DBFS, tone_frames  # noqa: E402
 
@@ -27,15 +28,41 @@ def test_names_match_the_typescript_side():
         assert f'"{name}"' in ts
     assert protocol.ECHOED_TRACKS == {"mic": "echo-mic", "probe": "echo-probe"}
     assert f'CAPTIONS_TOPIC = "{protocol.CAPTIONS_TOPIC}"' in ts
-    for attr in (protocol.ATTR_CAPTIONS, protocol.ATTR_CAPTIONS_DETAIL):
+    assert f'TRANSLATION_TOPIC = "{protocol.TRANSLATION_TOPIC}"' in ts
+    for attr in (
+        protocol.ATTR_CAPTIONS,
+        protocol.ATTR_CAPTIONS_DETAIL,
+        protocol.ATTR_TRANSLATION,
+        protocol.ATTR_TRANSLATION_DETAIL,
+    ):
         assert f'"{attr}"' in ts
 
 
-def test_caption_languages_match_the_web_app():
+def _ts_language_list(name: str) -> list[tuple[str, str]]:
     ts = (REPO / "src/lib/interpreter/protocol.ts").read_text()
-    listed = ts.split("CAPTION_LANGUAGES = [", 1)[1].split("]", 1)[0]
-    codes = [line.split('code: "', 1)[1].split('"', 1)[0] for line in listed.splitlines() if 'code: "' in line]
-    assert tuple(codes) == CAPTION_LANGUAGES
+    listed = ts.split(f"{name} = [", 1)[1].split("]", 1)[0]
+    rows = []
+    for line in listed.splitlines():
+        if 'code: "' in line:
+            code = line.split('code: "', 1)[1].split('"', 1)[0]
+            label = line.split('label: "', 1)[1].split('"', 1)[0]
+            rows.append((code, label))
+    return rows
+
+
+def test_translation_languages_match_the_web_app():
+    assert _ts_language_list("TRANSLATION_LANGUAGES") == list(protocol.LANGUAGE_NAMES.items())
+
+
+def test_target_language_is_validated():
+    assert target_language('{"targetLanguage":"ja"}') == "ja"
+    assert target_language('{"targetLanguage":"xx"}') is None
+    assert target_language('{"sourceLanguage":"en"}') is None
+    assert target_language(None) is None
+
+
+def test_caption_languages_match_the_web_app():
+    assert tuple(code for code, _ in _ts_language_list("CAPTION_LANGUAGES")) == CAPTION_LANGUAGES
 
 
 def test_source_language_falls_back_safely():

@@ -5,6 +5,7 @@ import { assessCapture } from "./aec";
 import { createInterpreterSession, liveKitConfig } from "./livekit";
 import { assessLeak, isOnset, median, rmsDb, SILENCE_DB, summariseLatency } from "./measure";
 import { CONTROL_TOPIC, decodeControl, encodeControl, TRACK } from "./protocol";
+import { interpreterSessionSchema } from "../validation";
 
 const bytes = (s: string) => new TextEncoder().encode(s);
 
@@ -123,6 +124,15 @@ describe("capture check", () => {
   });
 });
 
+describe("session request validation", () => {
+  it("defaults to auto-detect into Spanish and rejects same-language pairs", () => {
+    expect(interpreterSessionSchema.parse({})).toEqual({ sourceLanguage: "multi", targetLanguage: "es" });
+    expect(interpreterSessionSchema.safeParse({ sourceLanguage: "en", targetLanguage: "en" }).success).toBe(false);
+    expect(interpreterSessionSchema.safeParse({ sourceLanguage: "en", targetLanguage: "xx" }).success).toBe(false);
+    expect(interpreterSessionSchema.safeParse({ sourceLanguage: "multi", targetLanguage: "en" }).success).toBe(true);
+  });
+});
+
 describe("LiveKit session", () => {
   const env = {
     LIVEKIT_URL: "wss://example.livekit.cloud",
@@ -139,7 +149,7 @@ describe("LiveKit session", () => {
   });
 
   it("mints a single-room token that dispatches the agent", async () => {
-    const session = await createInterpreterSession(liveKitConfig(env)!, { id: "u1", name: "Ada" }, { sourceLanguage: "es" });
+    const session = await createInterpreterSession(liveKitConfig(env)!, { id: "u1", name: "Ada" }, { sourceLanguage: "es", targetLanguage: "en" });
     expect(session.url).toBe(env.LIVEKIT_URL);
     expect(session.identity).toBe("user_u1");
     expect(session.room).toMatch(/^interp_u1_[0-9a-f]{8}$/);
@@ -153,12 +163,12 @@ describe("LiveKit session", () => {
     expect(claims.roomConfig.agents[0].agentName).toBe("interpreter");
     expect(claims.exp - claims.nbf).toBeLessThanOrEqual(600);
     // The agent reads the caption language from here.
-    expect(JSON.parse(claims.metadata)).toEqual({ sourceLanguage: "es" });
+    expect(JSON.parse(claims.metadata)).toEqual({ sourceLanguage: "es", targetLanguage: "en" });
   });
 
   it("uses a fresh room for every session", async () => {
     const config = liveKitConfig(env)!;
-    const opts = { sourceLanguage: "multi" } as const;
+    const opts = { sourceLanguage: "multi", targetLanguage: "es" } as const;
     const a = await createInterpreterSession(config, { id: "u1", name: "Ada" }, opts);
     const b = await createInterpreterSession(config, { id: "u1", name: "Ada" }, opts);
     expect(a.room).not.toBe(b.room);

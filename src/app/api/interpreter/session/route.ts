@@ -31,7 +31,7 @@ export const POST = route(async (req) => {
   const session = await createInterpreterSession(
     config,
     { id: claims.sub, name: claims.name },
-    { sourceLanguage: body.sourceLanguage },
+    { sourceLanguage: body.sourceLanguage, targetLanguage: body.targetLanguage },
   );
   return json(session, { status: 201 });
 });

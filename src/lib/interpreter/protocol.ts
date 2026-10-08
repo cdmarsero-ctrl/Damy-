@@ -37,12 +37,50 @@ export const CAPTION_LANGUAGE_CODES = CAPTION_LANGUAGES.map((l) => l.code) as [
   ...CaptionLanguage[],
 ];
 
+/** Agent → client translation stream. */
+export const TRANSLATION_TOPIC = "interpreter.translation";
+
+/**
+ * Languages to translate into. Mirrors LANGUAGE_NAMES in
+ * agents/interpreter/protocol.py (tests on both sides keep them identical).
+ */
+export const TRANSLATION_LANGUAGES = [
+  { code: "en", label: "English" },
+  { code: "es", label: "Spanish" },
+  { code: "fr", label: "French" },
+  { code: "de", label: "German" },
+  { code: "it", label: "Italian" },
+  { code: "pt", label: "Portuguese" },
+  { code: "nl", label: "Dutch" },
+  { code: "ja", label: "Japanese" },
+  { code: "ko", label: "Korean" },
+  { code: "zh", label: "Chinese" },
+  { code: "ru", label: "Russian" },
+  { code: "hi", label: "Hindi" },
+  { code: "ar", label: "Arabic" },
+  { code: "tr", label: "Turkish" },
+  { code: "pl", label: "Polish" },
+  { code: "sv", label: "Swedish" },
+  { code: "uk", label: "Ukrainian" },
+  { code: "vi", label: "Vietnamese" },
+  { code: "id", label: "Indonesian" },
+] as const;
+
+export type TranslationLanguage = (typeof TRANSLATION_LANGUAGES)[number]["code"];
+export const TRANSLATION_LANGUAGE_CODES = TRANSLATION_LANGUAGES.map((l) => l.code) as [
+  TranslationLanguage,
+  ...TranslationLanguage[],
+];
+
 /** Agent participant attributes: current state, not events. */
 export const AGENT_ATTR = {
   captions: "captions",
   captionsDetail: "captions.detail",
+  translation: "translation",
+  translationDetail: "translation.detail",
 } as const;
 
+/** Shared by captions and translation. */
 export type CaptionsStatus = "starting" | "live" | "unavailable" | "error";
 
 /** Track names. The agent republishes each client track it hears as `echo-<name>`. */
@@ -135,5 +173,51 @@ export function decodeCaption(payload: Uint8Array): CaptionMessage | null {
     final: m.final,
     ...(latency !== undefined ? { latencyMs: latency } : {}),
     ...(m.utteranceEnd === true ? { utteranceEnd: true } : {}),
+  };
+}
+
+/**
+ * Translation stream messages. Mirrors agents/interpreter/translation.py.
+ * `committed` is the full committed text for the sentence so far and only
+ * ever grows; `tentative` is the translator's current guess beyond it.
+ * `flushMs` (on the final message) runs from the end of speech, as
+ * captioned, to the complete translation; `mtMs` is the request that
+ * produced this update.
+ */
+export interface TranslationMessage {
+  type: "translation";
+  sentence: number;
+  committed: string;
+  tentative: string;
+  final: boolean;
+  mtMs?: number;
+  flushMs?: number;
+}
+
+export function decodeTranslation(payload: Uint8Array): TranslationMessage | null {
+  let value: unknown;
+  try {
+    value = JSON.parse(new TextDecoder().decode(payload));
+  } catch {
+    return null;
+  }
+  if (!value || typeof value !== "object") return null;
+  const m = value as Record<string, unknown>;
+  if (m.type !== "translation") return null;
+  if (!Number.isInteger(m.sentence) || (m.sentence as number) < 0) return null;
+  if (typeof m.committed !== "string" || typeof m.tentative !== "string" || typeof m.final !== "boolean") {
+    return null;
+  }
+  const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : undefined);
+  const mtMs = num(m.mtMs);
+  const flushMs = num(m.flushMs);
+  return {
+    type: "translation",
+    sentence: m.sentence as number,
+    committed: m.committed,
+    tentative: m.tentative,
+    final: m.final,
+    ...(mtMs !== undefined ? { mtMs } : {}),
+    ...(flushMs !== undefined ? { flushMs } : {}),
   };
 }

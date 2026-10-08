@@ -13,6 +13,7 @@ import { api, ApiClientError } from "@/lib/client";
 
 import { assessCapture, CAPTURE_CONSTRAINTS, type CaptureCheck, tryUpgradeToSystemWideAec } from "./aec";
 import { applyCaption, CAPTION_TARGET_MS, type CaptionState, EMPTY_CAPTIONS } from "./captions";
+import { applyTranslation, EMPTY_TRANSLATION, FLUSH_TARGET_MS, type TranslationState } from "./translation";
 import {
   assessLeak,
   isOnset,
@@ -30,14 +31,18 @@ import {
   type ControlMessage,
   decodeCaption,
   decodeControl,
+  decodeTranslation,
   encodeControl,
   TRACK,
+  TRANSLATION_TOPIC,
+  type TranslationLanguage,
 } from "./protocol";
 
 /**
  * Browser side of an interpreter session: capture with verified AEC, join the
- * LiveKit room, publish the mic, show the agent's live captions (Phase 2),
- * and run the Phase 1 diagnostics (loopback timing, echo test).
+ * LiveKit room, publish the mic, show the agent's live captions (Phase 2)
+ * and simultaneous translation (Phase 3), and run the Phase 1 diagnostics
+ * (loopback timing, echo test).
  *
  * Kept outside React so the media lifecycle (tracks, AudioContext, timers,
  * room) lives in one object with one `stop()`, and the component only
@@ -67,6 +72,11 @@ export interface SessionState {
   captionsDetail: string;
   /** Agent-measured caption latency, p50, against the Phase 2 target. */
   captionLatency: LatencySummary | null;
+  translation: TranslationState;
+  translationStatus: CaptionsStatus | null;
+  translationDetail: string;
+  /** End of speech to complete translation, p50, against the Phase 3 target. */
+  flushLatency: LatencySummary | null;
 }
 
 const AGENT_JOIN_TIMEOUT_MS = 15_000;
@@ -99,6 +109,10 @@ export const INITIAL_STATE: SessionState = {
   captionsStatus: null,
   captionsDetail: "",
   captionLatency: null,
+  translation: EMPTY_TRANSLATION,
+  translationStatus: null,
+  translationDetail: "",
+  flushLatency: null,
 };
 
 const CAPTIONS_STATUSES: readonly string[] = ["starting", "live", "unavailable", "error"];
@@ -126,7 +140,7 @@ export class InterpreterClient {
     this.onChange(this.state);
   }
 
-  async start(sourceLanguage: CaptionLanguage) {
+  async start(sourceLanguage: CaptionLanguage, targetLanguage: TranslationLanguage) {
     this.set({ ...INITIAL_STATE, phase: "starting" });
     try {
       // Must run inside the click handler's user gesture, or autoplay policy
@@ -137,6 +151,7 @@ export class InterpreterClient {
       await this.captureMic();
       const session = await api.post<{ url: string; token: string }>("/api/interpreter/session", {
         sourceLanguage,
+        targetLanguage,
       });
       if (this.stopped) return;
 
@@ -263,15 +278,33 @@ export class InterpreterClient {
   }
 
   private readAgentAttributes(agent: RemoteParticipant) {
-    const status = agent.attributes[AGENT_ATTR.captions];
-    if (status === undefined) return;
+    const status = (key: string): CaptionsStatus | null => {
+      const value = agent.attributes[key];
+      if (value === undefined) return null;
+      return CAPTIONS_STATUSES.includes(value) ? (value as CaptionsStatus) : "error";
+    };
     this.set({
-      captionsStatus: CAPTIONS_STATUSES.includes(status) ? (status as CaptionsStatus) : "error",
-      captionsDetail: agent.attributes[AGENT_ATTR.captionsDetail] ?? "",
+      captionsStatus: status(AGENT_ATTR.captions) ?? this.state.captionsStatus,
+      captionsDetail: agent.attributes[AGENT_ATTR.captionsDetail] ?? this.state.captionsDetail,
+      translationStatus: status(AGENT_ATTR.translation) ?? this.state.translationStatus,
+      translationDetail: agent.attributes[AGENT_ATTR.translationDetail] ?? this.state.translationDetail,
     });
   }
 
   private onData(payload: Uint8Array, topic?: string) {
+    if (topic === TRANSLATION_TOPIC) {
+      const message = decodeTranslation(payload);
+      if (!message) return;
+      const translation = applyTranslation(this.state.translation, message);
+      this.set({
+        translation,
+        flushLatency:
+          translation.flushLatencies === this.state.translation.flushLatencies
+            ? this.state.flushLatency
+            : summariseLatency(translation.flushLatencies, FLUSH_TARGET_MS),
+      });
+      return;
+    }
     if (topic === CAPTIONS_TOPIC) {
       const caption = decodeCaption(payload);
       if (!caption) return;

@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-import { CAPTION_LANGUAGE_CODES } from "./interpreter/protocol";
+import { CAPTION_LANGUAGE_CODES, TRANSLATION_LANGUAGE_CODES } from "./interpreter/protocol";
 
 /**
  * Every API input is parsed through a schema here. Route handlers never touch
@@ -171,9 +171,15 @@ export const pronunciationSchema = z.object({
 
 // --- live interpreter -------------------------------------------------------
 
-export const interpreterSessionSchema = z.object({
-  sourceLanguage: z.enum(CAPTION_LANGUAGE_CODES).default("multi"),
-});
+export const interpreterSessionSchema = z
+  .object({
+    sourceLanguage: z.enum(CAPTION_LANGUAGE_CODES).default("multi"),
+    targetLanguage: z.enum(TRANSLATION_LANGUAGE_CODES).default("es"),
+  })
+  .refine((s) => s.sourceLanguage !== s.targetLanguage, {
+    message: "Choose a translation language different from the one you'll speak.",
+    path: ["targetLanguage"],
+  });
 
 // --- exams ------------------------------------------------------------------
 

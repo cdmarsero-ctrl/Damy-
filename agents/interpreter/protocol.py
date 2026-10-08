@@ -20,11 +20,28 @@ CAPTIONS_TOPIC = "interpreter.captions"
 CAPTION_LANGUAGES = ("multi", "en", "es", "fr", "de", "it", "pt", "nl", "ja", "ru", "hi")
 DEFAULT_LANGUAGE = "multi"
 
+# Agent -> client translation stream; see translation.py.
+TRANSLATION_TOPIC = "interpreter.translation"
+
+# Language names are what the translation prompt uses, so they are spelled
+# out here rather than derived from the codes.
+LANGUAGE_NAMES = {
+    "en": "English", "es": "Spanish", "fr": "French", "de": "German", "it": "Italian",
+    "pt": "Portuguese", "nl": "Dutch", "ja": "Japanese", "ko": "Korean", "zh": "Chinese",
+    "ru": "Russian", "hi": "Hindi", "ar": "Arabic", "tr": "Turkish", "pl": "Polish",
+    "sv": "Swedish", "uk": "Ukrainian", "vi": "Vietnamese", "id": "Indonesian",
+}
+# Target languages offered in the web app (same order as its picker).
+TRANSLATION_LANGUAGES = tuple(LANGUAGE_NAMES)
+DEFAULT_TARGET = "es"
+
 # Agent participant attributes. Attributes rather than messages because they
 # are state: a client that joins, reconnects or re-renders reads the current
 # value instead of depending on having caught an earlier message.
 ATTR_CAPTIONS = "captions"  # "starting" | "live" | "unavailable" | "error"
 ATTR_CAPTIONS_DETAIL = "captions.detail"  # human-readable reason, may be ""
+ATTR_TRANSLATION = "translation"  # same values as ATTR_CAPTIONS
+ATTR_TRANSLATION_DETAIL = "translation.detail"
 
 TRACK_MIC = "mic"
 TRACK_PROBE = "probe"
@@ -86,17 +103,29 @@ def decode_control(payload: bytes) -> ControlMessage | None:
     return None
 
 
+def _metadata(metadata: str | None) -> dict:
+    try:
+        value = json.loads(metadata or "{}")
+    except ValueError:
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
 def source_language(metadata: str | None) -> str:
     """The learner's chosen caption language from their participant metadata.
 
     The web app validates this when minting the token; it is checked again
     here because the agent must not pass arbitrary strings into the ASR URL.
     """
-    try:
-        value = json.loads(metadata or "{}").get("sourceLanguage")
-    except (ValueError, AttributeError):
-        return DEFAULT_LANGUAGE
+    value = _metadata(metadata).get("sourceLanguage")
     return value if value in CAPTION_LANGUAGES else DEFAULT_LANGUAGE
+
+
+def target_language(metadata: str | None) -> str | None:
+    """The language to translate into, or None if the learner didn't ask for
+    one (or asked for an unsupported one, which the web app should prevent)."""
+    value = _metadata(metadata).get("targetLanguage")
+    return value if value in TRANSLATION_LANGUAGES else None
 
 
 def encode_message(message: dict) -> bytes:

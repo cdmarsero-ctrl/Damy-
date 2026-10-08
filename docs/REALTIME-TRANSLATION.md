@@ -460,6 +460,19 @@ run with an API key.
 4. **Exit criteria:** zero retractions across the test corpus; lag within §0 targets
    on captions; quality checked by bilingual reviewers + COMET on the benchmark set.
 
+**Status: built.** `agents/interpreter/policy.py` is the commit policy: LocalAgreement-2,
+a per-pair lag ceiling (4 tokens, 6 when either language is verb-final, ×3 for
+Japanese/Chinese character tokens), flush on sentence end, and append-only by
+construction, tested with scripted and randomised hypothesis sequences.
+`translation.py` runs one request at a time per session (the newest source state wins;
+the in-flight request is cancelled only when its sentence ends) and publishes committed
+and tentative text on `interpreter.translation`. `mt.py` streams Claude Haiku 5.5 with
+thinking off and a cached, session-stable system prompt. The page shows both panels and
+counts retractions independently. Verified end to end with fake Deepgram and Anthropic
+servers: 0 retractions, translation lag ≈ one model call (265 ms with 250 ms simulated
+time to first token). Glossary support (design §4.2) and the quality evaluation still
+need doing; the evaluation needs real keys.
+
 ### Phase 4 — Streaming voice (1–2 weeks)
 1. TTS adapter (Cartesia contexts / ElevenLabs stream-input) fed only by committed deltas.
 2. Pacer: jitter buffer, adaptive speaking rate, publish as the agent's audio track.

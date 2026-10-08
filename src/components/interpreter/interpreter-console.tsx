@@ -2,20 +2,27 @@
 
 import { useEffect, useRef, useState } from "react";
 import {
-  AlertCircle, AudioLines, Captions, Gauge, Headphones, PhoneOff, Power, ShieldCheck, Timer,
+  AlertCircle, AudioLines, Captions, Gauge, Headphones, Languages, PhoneOff, Power, ShieldCheck, Timer, Undo2,
 } from "lucide-react";
 
 import { Button, Card, ErrorMessage, Pill, Progress, Select, Stat } from "@/components/ui";
 import { CAPTION_TARGET_MS, captionLines } from "@/lib/interpreter/captions";
 import { INITIAL_STATE, InterpreterClient, type SessionState } from "@/lib/interpreter/client-session";
 import { LOOPBACK_TARGET_MS, type LatencySummary } from "@/lib/interpreter/measure";
-import { CAPTION_LANGUAGES, type CaptionLanguage } from "@/lib/interpreter/protocol";
+import {
+  CAPTION_LANGUAGES,
+  type CaptionLanguage,
+  TRANSLATION_LANGUAGES,
+  type TranslationLanguage,
+} from "@/lib/interpreter/protocol";
+import { FLUSH_TARGET_MS } from "@/lib/interpreter/translation";
 import { cn } from "@/lib/utils";
 
 /**
- * The live interpreter, Phase 2 (docs/REALTIME-TRANSLATION.md §8): the
- * learner's speech captioned live, with the Phase 1 connection diagnostics
- * kept below for checking latency and echo cancellation on a new device.
+ * The live interpreter, Phase 3 (docs/REALTIME-TRANSLATION.md §8): the
+ * learner's speech captioned and translated as they talk, with the Phase 1
+ * connection diagnostics kept below for checking latency and echo
+ * cancellation on a new device.
  */
 
 const PHASE_LABEL: Record<SessionState["phase"], string> = {
@@ -27,7 +34,7 @@ const PHASE_LABEL: Record<SessionState["phase"], string> = {
   error: "Stopped",
 };
 
-const CAPTIONS_LABEL: Record<NonNullable<SessionState["captionsStatus"]>, { text: string; tone: "success" | "warning" | "danger" | "neutral" }> = {
+const STATUS_LABEL: Record<NonNullable<SessionState["captionsStatus"]>, { text: string; tone: "success" | "warning" | "danger" | "neutral" }> = {
   starting: { text: "Starting", tone: "warning" },
   live: { text: "Live", tone: "success" },
   unavailable: { text: "Unavailable", tone: "neutral" },
@@ -37,8 +44,10 @@ const CAPTIONS_LABEL: Record<NonNullable<SessionState["captionsStatus"]>, { text
 export function InterpreterConsole({ available }: { available: boolean }) {
   const [state, setState] = useState<SessionState>(INITIAL_STATE);
   const [language, setLanguage] = useState<CaptionLanguage>("multi");
+  const [target, setTarget] = useState<TranslationLanguage>("es");
   const client = useRef<InterpreterClient | null>(null);
   const captionsBox = useRef<HTMLDivElement | null>(null);
+  const translationBox = useRef<HTMLDivElement | null>(null);
 
   // Leaving the page must release the mic and the room.
   useEffect(() => () => void client.current?.stop(), []);
@@ -52,16 +61,26 @@ export function InterpreterConsole({ available }: { available: boolean }) {
     if (box) box.scrollTop = box.scrollHeight;
   }, [lines.length, lastLine?.committed, lastLine?.pending]);
 
+  const sentences = state.translation.sentences;
+  const lastSentence = sentences.at(-1);
+  useEffect(() => {
+    const box = translationBox.current;
+    if (box) box.scrollTop = box.scrollHeight;
+  }, [sentences.length, lastSentence?.committed, lastSentence?.tentative]);
+
   const active = state.phase === "starting" || state.phase === "waiting-agent" || state.phase === "live";
   const live = state.phase === "live";
+  const sameLanguage = language === target;
+  const targetLabel = TRANSLATION_LANGUAGES.find((l) => l.code === target)?.label ?? target;
 
   function start() {
     void client.current?.stop();
     client.current = new InterpreterClient(setState);
-    void client.current.start(language);
+    void client.current.start(language, target);
   }
 
-  const captionsLabel = state.captionsStatus ? CAPTIONS_LABEL[state.captionsStatus] : null;
+  const captionsLabel = state.captionsStatus ? STATUS_LABEL[state.captionsStatus] : null;
+  const translationLabel = state.translationStatus ? STATUS_LABEL[state.translationStatus] : null;
 
   return (
     <div className="max-w-4xl mx-auto px-4 sm:px-6 py-8">
@@ -71,11 +90,12 @@ export function InterpreterConsole({ available }: { available: boolean }) {
             <AudioLines className="size-5" aria-hidden />
           </span>
           <h1 className="text-2xl font-semibold tracking-tight">Live interpreter</h1>
-          <Pill tone="info">Phase 2 · live captions</Pill>
+          <Pill tone="info">Phase 3 · live translation</Pill>
         </div>
         <p className="muted text-pretty">
-          Speak and your words appear as you say them. Grey text is still being worked out; it settles
-          into black as the recogniser commits to it. Translation comes next, building on these captions.
+          Speak, and your words are captioned and translated while you&apos;re still talking. Grey text is
+          still being worked out. Translated text turns black only once it&apos;s safe, and is never taken
+          back; that&apos;s what will let it be spoken aloud in the next phase.
         </p>
       </header>
 
@@ -122,6 +142,24 @@ export function InterpreterConsole({ available }: { available: boolean }) {
                 ))}
               </Select>
             </div>
+            <div className="w-48">
+              <label htmlFor="target-language" className="block text-xs font-medium muted mb-1.5">
+                Translate into
+              </label>
+              <Select
+                id="target-language"
+                value={target}
+                onChange={(e) => setTarget(e.target.value as TranslationLanguage)}
+                disabled={active}
+                aria-describedby={sameLanguage ? "same-language" : undefined}
+              >
+                {TRANSLATION_LANGUAGES.map((l) => (
+                  <option key={l.code} value={l.code}>
+                    {l.label}
+                  </option>
+                ))}
+              </Select>
+            </div>
             <div className="flex items-center gap-2.5 pb-2.5">
               <span
                 className={cn(
@@ -141,64 +179,123 @@ export function InterpreterConsole({ available }: { available: boolean }) {
               End session
             </Button>
           ) : (
-            <Button onClick={start} disabled={!available}>
+            <Button onClick={start} disabled={!available || sameLanguage}>
               <Power className="size-4" aria-hidden />
               {state.phase === "idle" ? "Start" : "Start again"}
             </Button>
           )}
         </div>
+        {sameLanguage && (
+          <p id="same-language" className="text-sm text-warning mt-3">
+            Pick a translation language different from the one you&apos;ll speak.
+          </p>
+        )}
       </Card>
 
-      {/* ---------------------------------------------------------- captions */}
-      <Card className="mb-5">
-        <div className="flex items-center justify-between gap-3 mb-3">
-          <h2 className="font-semibold flex items-center gap-2">
-            <Captions className="size-4 text-brand-500" aria-hidden />
-            Captions
-          </h2>
-          {captionsLabel && <Pill tone={captionsLabel.tone}>{captionsLabel.text}</Pill>}
-        </div>
-        {state.captionsDetail && <p className="text-sm muted mb-3 text-pretty">{state.captionsDetail}</p>}
-        <div
-          ref={captionsBox}
-          role="log"
-          aria-label="Live captions"
-          className="h-56 overflow-y-auto rounded-lg bg-[var(--surface-sunken)] p-4 text-lg leading-relaxed"
-        >
-          {lines.length === 0 ? (
-            <p className="muted text-base">
-              {!live
-                ? "Captions appear here once the session is live."
-                : state.captionsStatus === "live"
-                  ? "Listening — start speaking."
-                  : state.captionsStatus === "unavailable" || state.captionsStatus === "error"
-                    ? "Captions are off for this session."
-                    : "Starting captions…"}
-            </p>
-          ) : (
-            lines.map((line, i) => (
-              <p key={i} className="mb-2 last:mb-0 text-pretty">
-                {line.committed}
-                {line.committed && line.pending ? " " : ""}
-                {/* Interim text is revised many times a second; keep it out of
-                    the screen-reader announcement until it settles. */}
-                {line.pending && (
-                  <span className="muted italic" aria-hidden>
-                    {line.pending}
-                  </span>
-                )}
+      {/* ------------------------------------------ captions and translation */}
+      <div className="grid lg:grid-cols-2 gap-5 mb-5">
+        <Card>
+          <div className="flex items-center justify-between gap-3 mb-3">
+            <h2 className="font-semibold flex items-center gap-2">
+              <Captions className="size-4 text-brand-500" aria-hidden />
+              Captions
+            </h2>
+            {captionsLabel && <Pill tone={captionsLabel.tone}>{captionsLabel.text}</Pill>}
+          </div>
+          {state.captionsDetail && <p className="text-sm muted mb-3 text-pretty">{state.captionsDetail}</p>}
+          <div
+            ref={captionsBox}
+            role="log"
+            aria-label="Live captions"
+            className="h-64 overflow-y-auto rounded-lg bg-[var(--surface-sunken)] p-4 text-lg leading-relaxed"
+          >
+            {lines.length === 0 ? (
+              <p className="muted text-base">
+                {!live
+                  ? "Captions appear here once the session is live."
+                  : state.captionsStatus === "live"
+                    ? "Listening — start speaking."
+                    : state.captionsStatus === "unavailable" || state.captionsStatus === "error"
+                      ? "Captions are off for this session."
+                      : "Starting captions…"}
               </p>
-            ))
-          )}
-        </div>
-      </Card>
+            ) : (
+              lines.map((line, i) => (
+                <p key={i} className="mb-2 last:mb-0 text-pretty">
+                  {line.committed}
+                  {line.committed && line.pending ? " " : ""}
+                  {/* Interim text is revised many times a second; keep it out of
+                      the screen-reader announcement until it settles. */}
+                  {line.pending && (
+                    <span className="muted italic" aria-hidden>
+                      {line.pending}
+                    </span>
+                  )}
+                </p>
+              ))
+            )}
+          </div>
+        </Card>
 
-      <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-5">
+        <Card>
+          <div className="flex items-center justify-between gap-3 mb-3">
+            <h2 className="font-semibold flex items-center gap-2">
+              <Languages className="size-4 text-brand-500" aria-hidden />
+              {targetLabel}
+            </h2>
+            {translationLabel && <Pill tone={translationLabel.tone}>{translationLabel.text}</Pill>}
+          </div>
+          {state.translationDetail && <p className="text-sm muted mb-3 text-pretty">{state.translationDetail}</p>}
+          <div
+            ref={translationBox}
+            role="log"
+            aria-label={`Live translation into ${targetLabel}`}
+            className="h-64 overflow-y-auto rounded-lg bg-[var(--surface-sunken)] p-4 text-lg leading-relaxed"
+          >
+            {sentences.length === 0 ? (
+              <p className="muted text-base">
+                {!live
+                  ? "The translation appears here once the session is live."
+                  : state.translationStatus === "unavailable" || state.translationStatus === "error"
+                    ? "Translation is off for this session."
+                    : "Waiting for you to speak."}
+              </p>
+            ) : (
+              sentences.map((sentence) => (
+                <p key={sentence.id} className="mb-2 last:mb-0 text-pretty">
+                  {sentence.committed}
+                  {sentence.committed && sentence.tentative ? " " : ""}
+                  {sentence.tentative && (
+                    <span className="muted italic" aria-hidden>
+                      {sentence.tentative}
+                    </span>
+                  )}
+                </p>
+              ))
+            )}
+          </div>
+        </Card>
+      </div>
+
+      <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4 mb-5">
         <LatencyStat
           label="Caption latency"
           icon={<Captions className="size-4" aria-hidden />}
           value={state.captionLatency}
           empty="no captions yet"
+        />
+        <LatencyStat
+          label="Translation lag"
+          icon={<Languages className="size-4" aria-hidden />}
+          value={state.flushLatency}
+          empty="no sentences yet"
+        />
+        <Stat
+          label="Retractions"
+          icon={<Undo2 className="size-4" aria-hidden />}
+          value={state.translation.sentences.length ? state.translation.retractions : "—"}
+          sub="committed text taken back (should be 0)"
+          tone={state.translation.sentences.length ? (state.translation.retractions === 0 ? "success" : "danger") : "neutral"}
         />
         <LatencyStat label="Audio round trip" icon={<Timer className="size-4" aria-hidden />} value={state.audioRtt} />
         <LatencyStat label="Data round trip" icon={<Gauge className="size-4" aria-hidden />} value={state.dataRtt} />
@@ -212,8 +309,9 @@ export function InterpreterConsole({ available }: { available: boolean }) {
       </div>
       <p className="text-xs muted -mt-2 mb-6 text-pretty">
         Caption latency is measured on the agent, from your audio reaching it to the caption leaving it
-        (target {CAPTION_TARGET_MS} ms median); add about half the data round trip for the trip to your
-        screen.
+        (target {CAPTION_TARGET_MS} ms median). Translation lag runs from the end of a sentence, as
+        captioned, to its complete translation (target {FLUSH_TARGET_MS} ms median); most of each sentence
+        is committed before you finish it. Add about half the data round trip for the trip to your screen.
       </p>
 
       {state.capture && state.capture.issues.length > 0 && (
