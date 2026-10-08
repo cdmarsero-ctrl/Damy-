@@ -3,12 +3,13 @@
 import { useEffect, useRef, useState } from "react";
 import {
   AlertCircle, AudioLines, Captions, Gauge, Headphones, Languages, PhoneOff, Power, ShieldCheck, Timer, Undo2,
+  Volume2,
 } from "lucide-react";
 
 import { Button, Card, ErrorMessage, Pill, Progress, Select, Stat } from "@/components/ui";
 import { CAPTION_TARGET_MS, captionLines } from "@/lib/interpreter/captions";
 import { INITIAL_STATE, InterpreterClient, type SessionState } from "@/lib/interpreter/client-session";
-import { LOOPBACK_TARGET_MS, type LatencySummary } from "@/lib/interpreter/measure";
+import { EAR_TO_VOICE_TARGET_MS, LOOPBACK_TARGET_MS, type LatencySummary } from "@/lib/interpreter/measure";
 import {
   CAPTION_LANGUAGES,
   type CaptionLanguage,
@@ -19,10 +20,10 @@ import { FLUSH_TARGET_MS } from "@/lib/interpreter/translation";
 import { cn } from "@/lib/utils";
 
 /**
- * The live interpreter, Phase 3 (docs/REALTIME-TRANSLATION.md §8): the
- * learner's speech captioned and translated as they talk, with the Phase 1
- * connection diagnostics kept below for checking latency and echo
- * cancellation on a new device.
+ * The live interpreter, Phase 4 (docs/REALTIME-TRANSLATION.md §8): the
+ * learner's speech captioned, translated and spoken in the target language
+ * as they talk, with the Phase 1 connection diagnostics kept below for
+ * checking latency and echo cancellation on a new device.
  */
 
 const PHASE_LABEL: Record<SessionState["phase"], string> = {
@@ -90,12 +91,12 @@ export function InterpreterConsole({ available }: { available: boolean }) {
             <AudioLines className="size-5" aria-hidden />
           </span>
           <h1 className="text-2xl font-semibold tracking-tight">Live interpreter</h1>
-          <Pill tone="info">Phase 3 · live translation</Pill>
+          <Pill tone="info">Phase 4 · spoken translation</Pill>
         </div>
         <p className="muted text-pretty">
-          Speak, and your words are captioned and translated while you&apos;re still talking. Grey text is
-          still being worked out. Translated text turns black only once it&apos;s safe, and is never taken
-          back; that&apos;s what will let it be spoken aloud in the next phase.
+          Speak, and your words are captioned, translated and spoken in the other language while you&apos;re
+          still talking. Grey text is still being worked out. Translated text turns black only once
+          it&apos;s safe, and only black text is spoken, so nothing you hear is ever taken back.
         </p>
       </header>
 
@@ -246,6 +247,31 @@ export function InterpreterConsole({ available }: { available: boolean }) {
             {translationLabel && <Pill tone={translationLabel.tone}>{translationLabel.text}</Pill>}
           </div>
           {state.translationDetail && <p className="text-sm muted mb-3 text-pretty">{state.translationDetail}</p>}
+          <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1 mb-3 text-sm">
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={state.speak}
+                onChange={(e) => client.current?.setSpeak(e.target.checked)}
+              />
+              Speak the translation
+            </label>
+            <span className="flex items-center gap-1.5 muted" aria-live="polite">
+              <Volume2
+                className={cn("size-4", state.speaking && state.speak ? "text-brand-500 animate-pulse" : "")}
+                aria-hidden
+              />
+              {state.voiceStatus === "unavailable" || state.voiceStatus === "error"
+                ? state.voiceDetail || "Speech is off"
+                : state.speaking && state.speak
+                  ? "Speaking…"
+                  : state.voiceStatus === "live"
+                    ? "Voice ready"
+                    : live
+                      ? "Starting voice…"
+                      : ""}
+            </span>
+          </div>
           <div
             ref={translationBox}
             role="log"
@@ -277,7 +303,7 @@ export function InterpreterConsole({ available }: { available: boolean }) {
         </Card>
       </div>
 
-      <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4 mb-5">
+      <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-5">
         <LatencyStat
           label="Caption latency"
           icon={<Captions className="size-4" aria-hidden />}
@@ -289,6 +315,12 @@ export function InterpreterConsole({ available }: { available: boolean }) {
           icon={<Languages className="size-4" aria-hidden />}
           value={state.flushLatency}
           empty="no sentences yet"
+        />
+        <LatencyStat
+          label="Voice lag"
+          icon={<Volume2 className="size-4" aria-hidden />}
+          value={state.voiceLag}
+          empty="nothing spoken yet"
         />
         <Stat
           label="Retractions"
@@ -311,8 +343,18 @@ export function InterpreterConsole({ available }: { available: boolean }) {
         Caption latency is measured on the agent, from your audio reaching it to the caption leaving it
         (target {CAPTION_TARGET_MS} ms median). Translation lag runs from the end of a sentence, as
         captioned, to its complete translation (target {FLUSH_TARGET_MS} ms median); most of each sentence
-        is committed before you finish it. Add about half the data round trip for the trip to your screen.
+        is committed before you finish it. Voice lag runs from a sentence&apos;s first words reaching the agent
+        to its translation starting to play (target {EAR_TO_VOICE_TARGET_MS} ms median). Add about half the
+        data round trip for the trip to your screen and speaker.
       </p>
+      {state.speak && live && (
+        <p className="text-sm text-pretty mb-5 flex gap-2">
+          <Headphones className="size-4 text-brand-500 shrink-0 mt-0.5" aria-hidden />
+          Headphones are recommended for now. Echo cancellation should keep the translated voice out of your
+          microphone, but the safeguards that stop it being re-translated if it leaks through come in the
+          next phase.
+        </p>
+      )}
 
       {state.capture && state.capture.issues.length > 0 && (
         <Card className="mb-5 border-warning/40 bg-warning/5">

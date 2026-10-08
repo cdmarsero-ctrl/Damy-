@@ -5,6 +5,8 @@ import {
   TRANSLATION_TOPIC,
   type TranslationMessage,
   decodeTranslation,
+  decodeVoice,
+  VOICE_TOPIC,
 } from "./protocol";
 import { applyTranslation, EMPTY_TRANSLATION, MAX_SENTENCES, type TranslationState } from "./translation";
 
@@ -74,5 +76,21 @@ describe("translation state", () => {
     for (let i = 0; i < MAX_SENTENCES + 5; i++) state = applyTranslation(state, tr(i, `s${i}`, "", true));
     expect(state.sentences).toHaveLength(MAX_SENTENCES);
     expect(state.sentences[0].id).toBe(5);
+  });
+});
+
+describe("decodeVoice", () => {
+  it("accepts voice messages and drops bad timings", () => {
+    expect(VOICE_TOPIC).toBe("interpreter.voice");
+    expect(decodeVoice(bytes({ type: "voice", sentence: 3, lagMs: 910.2, backlogMs: 0 }))).toEqual({
+      type: "voice",
+      sentence: 3,
+      lagMs: 910.2,
+      backlogMs: 0,
+    });
+    expect(decodeVoice(bytes({ type: "voice", sentence: 1, lagMs: -5 }))).toEqual({ type: "voice", sentence: 1 });
+    for (const bad of ["x", { type: "voice" }, { type: "voice", sentence: 1.5 }, { type: "caption", sentence: 1 }]) {
+      expect(decodeVoice(bytes(bad))).toBeNull();
+    }
   });
 });

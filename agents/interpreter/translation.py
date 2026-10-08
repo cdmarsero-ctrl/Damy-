@@ -36,6 +36,10 @@ DEBOUNCE_S = 0.15
 RETRY_DELAY_S = 1.0
 
 Translate = Callable[[TranslationRequest], Awaitable[TranslationResult]]
+#: (sentence, newly committed text, sentence final, speech started) - the
+#: speech layer's input. Called in order; text is "" only on a final with
+#: nothing new to add.
+OnCommit = Callable[[int, str, bool, "float | None"], None]
 Publish = Callable[[dict], Awaitable[None]]
 SetStatus = Callable[[str, str], Awaitable[None]]
 
@@ -47,6 +51,9 @@ class Sentence:
     unstable: str = ""
     closed: bool = False
     closed_at: float | None = None
+    #: When the sentence's first words reached the agent (caption time minus
+    #: its recognition latency); the start of the ear-to-voice measurement.
+    speech_started: float | None = None
 
     def source_text(self) -> tuple[str, str]:
         return " ".join(self.frozen), self.unstable
@@ -72,6 +79,9 @@ class SourceSentences:
             return False
         sentence = self.current
         text = str(message.get("text") or "")
+        if text and sentence.speech_started is None:
+            latency = message.get("latencyMs")
+            sentence.speech_started = now - (latency / 1000 if isinstance(latency, (int, float)) else 0.0)
         if message.get("final"):
             if text:
                 sentence.frozen.append(text)
@@ -102,8 +112,10 @@ class TranslationLoop:
         set_status: SetStatus,
         source: str,
         target: str,
+        on_commit: OnCommit | None = None,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
+        self._on_commit = on_commit
         self._translate = translate
         self._publish = publish
         self._set_status = set_status
@@ -213,6 +225,8 @@ class TranslationLoop:
             # From the end of speech (as captioned) to the full translation.
             message["flushMs"] = round((self._clock() - head.closed_at) * 1000, 1)
         await self._publish(message)
+        if self._on_commit is not None and (commit.delta or final):
+            self._on_commit(head.id, detokenize(commit.delta, self._target), final, head.speech_started)
 
         if final:
             # An interim the recogniser never finalised still counts as said.

@@ -8,6 +8,9 @@
 /** Phase 1 exit criterion: audio round trip through the agent, p50. */
 export const LOOPBACK_TARGET_MS = 150;
 
+/** Phase 4: source speech to translated voice, p50 (design doc §0, SVO pairs). */
+export const EAR_TO_VOICE_TARGET_MS = 1200;
+
 /** Level treated as digital silence. Keeps log10(0) out of the arithmetic. */
 export const SILENCE_DB = -100;
 

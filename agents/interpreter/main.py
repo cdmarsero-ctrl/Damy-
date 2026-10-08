@@ -7,11 +7,13 @@ Joins each interpreter room the web app dispatches it to and:
 * Phase 3: translates those captions as they form (Claude under an
   append-only commit policy), sending committed and tentative text on
   `interpreter.translation`;
+* Phase 4: speaks the committed translation on its `voice` track (Cartesia
+  streaming TTS, one context per sentence, paced playout);
 * Phase 1 diagnostics: republishes `mic` and `probe` as `echo-mic` and
   `echo-probe`, answers data-channel pings, and plays a test tone on request
   so the client can check echo cancellation.
 
-Phase 4 adds streaming speech (TTS) of the committed translation.
+Phase 5 hardens echo handling for speakers-on use.
 See docs/REALTIME-TRANSLATION.md.
 
 Run:  python main.py dev     (local, auto-reload)
@@ -25,8 +27,10 @@ import logging
 import os
 from dataclasses import dataclass
 
+import aiohttp
 import anthropic
 from livekit import rtc
+from livekit.rtc.participant import PublishDataError
 from livekit.agents import AgentServer, AutoSubscribe, JobContext, JobProcess, cli
 from livekit.plugins import silero
 
@@ -38,13 +42,17 @@ from protocol import (
     ATTR_CAPTIONS_DETAIL,
     ATTR_TRANSLATION,
     ATTR_TRANSLATION_DETAIL,
+    ATTR_VOICE,
+    ATTR_VOICE_DETAIL,
     CAPTIONS_TOPIC,
     LANGUAGE_NAMES,
     TRANSLATION_TOPIC,
+    VOICE_TOPIC,
     CONTROL_TOPIC,
     ECHOED_TRACKS,
     TRACK_MIC,
     TRACK_TONE,
+    TRACK_VOICE,
     Ping,
     ToneRequest,
     decode_control,
@@ -55,7 +63,10 @@ from protocol import (
     target_language,
 )
 from tone import FRAME_MS, SAMPLE_RATE, SAMPLES_PER_FRAME, tone_frames
+from speech import Speaker
 from translation import TranslationLoop
+from tts import CARTESIA_URL, DEFAULT_MODEL as DEFAULT_TTS_MODEL, SAMPLE_RATE as TTS_SAMPLE_RATE
+from tts import CartesiaStream, TtsConnectError
 
 AGENT_NAME = os.environ.get("INTERPRETER_AGENT_NAME", "interpreter")
 DEEPGRAM_API_KEY = os.environ.get("DEEPGRAM_API_KEY", "")
@@ -65,6 +76,16 @@ DEEPGRAM_BASE_URL = os.environ.get("DEEPGRAM_URL", DEEPGRAM_URL)
 # (read by the SDK) points it at tests/fake_anthropic.py locally.
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 MT_MODEL = os.environ.get("INTERPRETER_MT_MODEL", DEFAULT_MODEL)
+# Speech. Voice ids are per Cartesia account (or from its voice library), so
+# there is no default voice.
+CARTESIA_API_KEY = os.environ.get("CARTESIA_API_KEY", "")
+CARTESIA_VOICE_ID = os.environ.get("CARTESIA_VOICE_ID", "")
+CARTESIA_BASE_URL = os.environ.get("CARTESIA_URL", CARTESIA_URL)
+TTS_MODEL = os.environ.get("INTERPRETER_TTS_MODEL", DEFAULT_TTS_MODEL)
+# Server-side text buffering per context; see tts.generation_request.
+TTS_BUFFER_MS = int(os.environ.get("INTERPRETER_TTS_BUFFER_MS", "300"))
+# The voice track's source queue doubles as the playout jitter buffer (§5.4).
+VOICE_JITTER_MS = 200
 
 # Latency at the agent is bounded on both sides of the echo. Input and output
 # run at the same real-time rate, so any backlog a stall creates would never
@@ -82,6 +103,14 @@ class _Translation:
     loop: TranslationLoop
     task: asyncio.Task[None]
     client: anthropic.AsyncAnthropic
+    speech: asyncio.Task[None] | None = None
+
+    async def close(self) -> None:
+        for task in (self.task, self.speech):
+            if task is not None:
+                task.cancel()
+        await asyncio.gather(*(t for t in (self.task, self.speech) if t), return_exceptions=True)
+        await self.client.close()
 
 
 def prewarm(proc: JobProcess) -> None:
@@ -111,9 +140,15 @@ class InterpreterSession:
                 "unavailable", "Speech recognition is not configured on the agent (DEEPGRAM_API_KEY)."
             )
             await self.set_translation_status("unavailable", "Translation needs live captions, which are off.")
+            await self.set_voice_status("unavailable", "Speech needs live captions, which are off.")
         elif not ANTHROPIC_API_KEY:
             await self.set_translation_status(
                 "unavailable", "Translation is not configured on the agent (ANTHROPIC_API_KEY)."
+            )
+            await self.set_voice_status("unavailable", "Speech needs translation, which is off.")
+        elif not (CARTESIA_API_KEY and CARTESIA_VOICE_ID):
+            await self.set_voice_status(
+                "unavailable", "Speech is not configured on the agent (CARTESIA_API_KEY, CARTESIA_VOICE_ID)."
             )
 
         self.room.on("track_subscribed", self.on_track_subscribed)
@@ -191,11 +226,19 @@ class InterpreterSession:
 
         async def send(topic: str, message: dict) -> None:
             # Reliable: finals and commits must arrive, and in order.
-            await self.room.local_participant.publish_data(
-                encode_message(message), reliable=True, destination_identities=[identity], topic=topic
-            )
+            if not self.room.isconnected():
+                return
+            try:
+                await self.room.local_participant.publish_data(
+                    encode_message(message), reliable=True, destination_identities=[identity], topic=topic
+                )
+            except PublishDataError:
+                # The learner left mid-update; there is no one to deliver to.
+                logger.debug("dropped %s message: room closed", topic)
 
-        translation = self.start_translation(language, target, lambda m: send(TRANSLATION_TOPIC, m))
+        translation = self.start_translation(
+            language, target, lambda m: send(TRANSLATION_TOPIC, m), lambda m: send(VOICE_TOPIC, m)
+        )
 
         async def publish(message: dict) -> None:
             await send(CAPTIONS_TOPIC, message)
@@ -219,16 +262,14 @@ class InterpreterSession:
             await self.set_captions_status("error", "Captioning stopped unexpectedly.")
         finally:
             if translation is not None:
-                translation.task.cancel()
-                await asyncio.gather(translation.task, return_exceptions=True)
-                await translation.client.close()
+                await translation.close()
 
     async def set_captions_status(self, status: str, detail: str) -> None:
         await self._set_attributes({ATTR_CAPTIONS: status, ATTR_CAPTIONS_DETAIL: detail})
 
     # ---------------------------------------------------------- translation
 
-    def start_translation(self, source: str, target: str | None, publish) -> _Translation | None:
+    def start_translation(self, source: str, target: str | None, publish, publish_voice) -> _Translation | None:
         if not ANTHROPIC_API_KEY:
             return None  # status already published in start()
         if target is None or target == source:
@@ -247,15 +288,67 @@ class InterpreterSession:
             target_label=LANGUAGE_NAMES[target],
             model=MT_MODEL,
         )
+        speaker = self.make_speaker(target, publish_voice)
         loop = TranslationLoop(
             translate=translator.translate,
             publish=publish,
             set_status=self.set_translation_status,
             source=source,
             target=target,
+            on_commit=speaker.on_commit if speaker else None,
         )
         task = asyncio.create_task(self._run_translation(loop), name="translation")
-        return _Translation(loop, task, client)
+        speech = asyncio.create_task(self._run_speech(speaker), name="speech") if speaker else None
+        return _Translation(loop, task, client, speech)
+
+    # --------------------------------------------------------------- speech
+
+    def make_speaker(self, target: str, publish) -> Speaker | None:
+        if not (CARTESIA_API_KEY and CARTESIA_VOICE_ID):
+            return None  # status already published in start()
+        self._voice_source = rtc.AudioSource(TTS_SAMPLE_RATE, 1, queue_size_ms=VOICE_JITTER_MS)
+        self._tts_session = aiohttp.ClientSession(trust_env=True)
+
+        async def connect() -> CartesiaStream:
+            stream = CartesiaStream(self._tts_session, CARTESIA_API_KEY, CARTESIA_BASE_URL)
+            await stream.connect()
+            return stream
+
+        async def sink(pcm: bytes) -> None:
+            # capture_frame waits while the source queue is full, which paces
+            # playout to real time.
+            await self._voice_source.capture_frame(rtc.AudioFrame(pcm, TTS_SAMPLE_RATE, 1, len(pcm) // 2))
+
+        return Speaker(
+            connect=connect,
+            sink=sink,
+            publish=publish,
+            set_status=self.set_voice_status,
+            voice_id=CARTESIA_VOICE_ID,
+            model=TTS_MODEL,
+            language=target,
+            buffer_ms=TTS_BUFFER_MS,
+            session_tag=self.room.name,
+        )
+
+    async def _run_speech(self, speaker: Speaker) -> None:
+        track = rtc.LocalAudioTrack.create_audio_track(TRACK_VOICE, self._voice_source)
+        try:
+            await self.room.local_participant.publish_track(track, publish_options())
+            await speaker.run()
+        except asyncio.CancelledError:
+            raise
+        except TtsConnectError:
+            pass  # permanent (auth); the speaker already published the reason
+        except Exception:
+            logger.exception("speech failed")
+            await self.set_voice_status("error", "Speech stopped unexpectedly.")
+        finally:
+            await self._tts_session.close()
+            await self._voice_source.aclose()
+
+    async def set_voice_status(self, status: str, detail: str) -> None:
+        await self._set_attributes({ATTR_VOICE: status, ATTR_VOICE_DETAIL: detail})
 
     async def _run_translation(self, loop: TranslationLoop) -> None:
         try:

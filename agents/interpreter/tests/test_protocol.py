@@ -24,16 +24,19 @@ REPO = Path(__file__).resolve().parents[3]
 def test_names_match_the_typescript_side():
     ts = (REPO / "src/lib/interpreter/protocol.ts").read_text()
     assert f'CONTROL_TOPIC = "{protocol.CONTROL_TOPIC}"' in ts
-    for name in ("mic", "probe", "echo-mic", "echo-probe", "tone"):
+    for name in ("mic", "probe", "echo-mic", "echo-probe", "tone", protocol.TRACK_VOICE):
         assert f'"{name}"' in ts
     assert protocol.ECHOED_TRACKS == {"mic": "echo-mic", "probe": "echo-probe"}
     assert f'CAPTIONS_TOPIC = "{protocol.CAPTIONS_TOPIC}"' in ts
     assert f'TRANSLATION_TOPIC = "{protocol.TRANSLATION_TOPIC}"' in ts
+    assert f'VOICE_TOPIC = "{protocol.VOICE_TOPIC}"' in ts
     for attr in (
         protocol.ATTR_CAPTIONS,
         protocol.ATTR_CAPTIONS_DETAIL,
         protocol.ATTR_TRANSLATION,
         protocol.ATTR_TRANSLATION_DETAIL,
+        protocol.ATTR_VOICE,
+        protocol.ATTR_VOICE_DETAIL,
     ):
         assert f'"{attr}"' in ts
 

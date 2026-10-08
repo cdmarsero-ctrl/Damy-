@@ -39,6 +39,7 @@ describe("control protocol", () => {
       echoMic: "echo-mic",
       echoProbe: "echo-probe",
       tone: "tone",
+      voice: "voice",
     });
   });
 });

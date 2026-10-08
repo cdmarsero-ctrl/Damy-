@@ -5,8 +5,9 @@ The server-side half of the live interpreter
 worker: the web app's `POST /api/interpreter/session` mints a room token that
 dispatches this agent into a fresh room alongside the learner.
 
-**Current stage: Phase 3, simultaneous translation** of live captions, with
-the Phase 1 loopback kept as connection diagnostics.
+**Current stage: Phase 4, spoken translation**: live captions, simultaneous
+translation and a translated voice, with the Phase 1 loopback kept as
+connection diagnostics.
 
 | Track or message | Direction | Purpose |
 |---|---|---|
@@ -14,6 +15,9 @@ the Phase 1 loopback kept as connection diagnostics.
 | `captions`, `captions.detail` attributes | agent | Caption status (`starting`, `live`, `unavailable`, `error`) and a readable reason. |
 | captions → translation on `interpreter.translation` | agent → learner | Committed (never retracted) and tentative translation per sentence. |
 | `translation`, `translation.detail` attributes | agent | Translation status, same values as captions. |
+| committed translation → `voice` track | agent → learner | The translation spoken (Cartesia), sentence by sentence. |
+| `interpreter.voice` | agent → learner | Per spoken sentence: ear-to-voice lag and queued audio. |
+| `voice`, `voice.detail` attributes | agent | Speech status, same values as captions. |
 | `mic` → `echo-mic` | learner → agent → learner | Hear yourself after the round trip; checks AEC by ear. |
 | `probe` → `echo-probe` | learner → agent → learner | Tone bursts timed by the browser to measure the audio round trip. |
 | `tone` | agent → learner | A test tone played through the speaker for the automated echo test. |
@@ -21,8 +25,8 @@ the Phase 1 loopback kept as connection diagnostics.
 
 The caption and translation languages come from the learner's participant
 metadata, which the web app signs into their token; the agent re-validates
-them against `CAPTION_LANGUAGES` and `LANGUAGE_NAMES`. Phase 4 adds streaming
-speech (TTS) of the committed translation.
+them against `CAPTION_LANGUAGES` and `LANGUAGE_NAMES`. Phase 5 adds echo
+safeguards for speakers-on use.
 
 ### How captioning works
 
@@ -70,6 +74,27 @@ speech (TTS) of the committed translation.
   one per model response time (3–4 per second at ~250 ms); silence costs
   nothing.
 
+### How speech works
+
+- **Only committed text is spoken** (`speech.py`). The translation loop hands
+  each commit to the speaker as it happens; committed text never changes, so
+  nothing spoken ever needs taking back.
+- **One TTS context per sentence** (`tts.py`, Cartesia's WebSocket API,
+  version 2026-08-14). Pieces are sent with `continue: true` as they commit,
+  and the context ends when the sentence is final, so the voice plans the
+  sentence's intonation as a whole even though it arrives a few words at a
+  time. `max_buffer_delay_ms` (default 300, `INTERPRETER_TTS_BUFFER_MS`)
+  lets the server smooth very small pieces.
+- **Playout in sentence order** (`PlayoutBuffer`): contexts can generate in
+  parallel, but sentence N+1 never plays before N has finished. The voice
+  track's 200 ms source queue is the jitter buffer.
+- **Steady lag** (§5.4): when more than 1.5 s of audio is waiting, later
+  pieces are generated at 1.12× speed until the backlog is under 0.5 s.
+- **Voice lag** is measured per sentence on the agent: from the sentence's
+  first words reaching it (caption time minus recognition latency) to its
+  translated audio starting to play. That's the agent's ear-to-voice; add
+  network and playout on each side.
+
 ## Run it locally
 
 Everything in one go (Postgres, app, LiveKit dev server, agent):
@@ -109,13 +134,17 @@ runs locally. `tests/fake_deepgram.py` checks requests like Deepgram and streams
 placeholder words (`word1 word2 …`) paced by the audio it receives;
 `tests/fake_anthropic.py` speaks the Messages API's streaming format and
 "translates" them (`palabra1 palabra2 …`), holding back the last word like a
-cautious interpreter.
+cautious interpreter; `tests/fake_cartesia.py` answers each piece with a soft
+tone, 250 ms per word.
 
 ```bash
 python tests/fake_deepgram.py --port 8765 --delay-ms 200    # simulated recognition time
 python tests/fake_anthropic.py --port 8766 --delay-ms 250   # simulated time to first token
+python tests/fake_cartesia.py --port 8767 --delay-ms 150    # simulated time to first audio
 DEEPGRAM_API_KEY=fake DEEPGRAM_URL=ws://127.0.0.1:8765/v1/listen \
-  ANTHROPIC_API_KEY=fake ANTHROPIC_BASE_URL=http://127.0.0.1:8766 python main.py dev
+  ANTHROPIC_API_KEY=fake ANTHROPIC_BASE_URL=http://127.0.0.1:8766 \
+  CARTESIA_API_KEY=fake CARTESIA_VOICE_ID=fake-voice \
+  CARTESIA_URL=ws://127.0.0.1:8767/tts/websocket python main.py dev
 ```
 
 | Agent variable | Default | |
@@ -126,11 +155,34 @@ DEEPGRAM_API_KEY=fake DEEPGRAM_URL=ws://127.0.0.1:8765/v1/listen \
 | `ANTHROPIC_API_KEY` | — | Enables translation (needs captions too). |
 | `INTERPRETER_MT_MODEL` | `claude-haiku-5-5` | Translation model. Larger models run at low effort; expect more lag. |
 | `ANTHROPIC_BASE_URL` | Anthropic API | Read by the SDK; for the fake. |
+| `CARTESIA_API_KEY`, `CARTESIA_VOICE_ID` | — | Enable the spoken translation (needs translation too). |
+| `CARTESIA_URL` | `wss://api.cartesia.ai/tts/websocket` | For the fake. |
+| `INTERPRETER_TTS_MODEL` | `sonic-3.6` | Cartesia model. |
+| `INTERPRETER_TTS_BUFFER_MS` | `300` | Server-side text buffering per sentence (0–5000). |
 | `INTERPRETER_AGENT_NAME` | `interpreter` | Must match the app's. |
 
 In `start` (production) mode the worker stops accepting jobs once host CPU
 passes 70 %; `dev` mode doesn't. The LiveKit server applies its own load check
 in both modes, though (see Troubleshooting).
+
+## Phase 4 exit criteria
+
+- **Ear-to-voice lag within the design targets**: the page's **Voice lag**,
+  target ≤ 1200 ms median for similar-word-order pairs.
+- **Natural voice**: a listening test (MOS ≥ 4.0). Not done yet: it needs
+  real speech and a real voice.
+
+Verified so far with the three fakes and the spoken test clip: the voice
+track reaches the browser and plays (the page's speaking indicator, driven
+by the received audio's level, was on in 54 of 70 samples over 14 s),
+sentences play in order, and there were still 0 retractions. Voice lag was
+**1412 ms** median with 200 ms recognition, 250 ms model and 150 ms TTS, and
+**1024 ms** with the model at 100 ms. Before a sentence's first words can be
+spoken, two translator answers must agree (the price of never retracting), so
+voice lag is dominated by model round trips, about 2.6 per sentence here.
+**Whether the target holds therefore depends on Claude's real response time**,
+which needs a key to measure. Levers if it doesn't: a faster model, the lag
+ceiling in `policy.py`, and `INTERPRETER_TTS_BUFFER_MS`.
 
 ## Phase 3 exit criteria
 
@@ -192,10 +244,11 @@ pytest tests
 ```
 
 The tests cover the pure modules (protocol, captions, gate, tone, commit
-policy), drive the translation loop with a scripted translator, run the
-Deepgram client and the Claude adapter (through the real Anthropic SDK)
-against the two fakes, and check that protocol constants and language lists
-match `src/lib/interpreter/protocol.ts`. They need no accounts or servers.
+policy, playout and speed rules), drive the translation loop with a scripted
+translator, run the Deepgram client, the Claude adapter (through the real
+Anthropic SDK) and the speaker against the three fakes, and check that
+protocol constants and language lists match `src/lib/interpreter/protocol.ts`.
+They need no accounts or servers.
 
 ## Troubleshooting
 
@@ -217,6 +270,10 @@ match `src/lib/interpreter/protocol.ts`. They need no accounts or servers.
   carry on.
 - **Translation is "unavailable"**: the agent has no `ANTHROPIC_API_KEY`, or
   no captions to translate (`DEEPGRAM_API_KEY`).
+- **Speech is off**: the agent needs `CARTESIA_API_KEY` and
+  `CARTESIA_VOICE_ID`, plus working translation. A rejected key stops speech
+  for the session; text carries on. If one sentence fails to synthesise it is
+  skipped so later sentences aren't held up.
 - **Captions stay on "Starting" / "retrying"**: the agent can't reach
   Deepgram. It uses `HTTPS_PROXY` if set (unlike the LiveKit connection below),
   so check the proxy or `DEEPGRAM_URL`.

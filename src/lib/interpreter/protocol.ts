@@ -40,6 +40,9 @@ export const CAPTION_LANGUAGE_CODES = CAPTION_LANGUAGES.map((l) => l.code) as [
 /** Agent → client translation stream. */
 export const TRANSLATION_TOPIC = "interpreter.translation";
 
+/** Agent → client voice metrics, one message per spoken sentence. */
+export const VOICE_TOPIC = "interpreter.voice";
+
 /**
  * Languages to translate into. Mirrors LANGUAGE_NAMES in
  * agents/interpreter/protocol.py (tests on both sides keep them identical).
@@ -78,6 +81,8 @@ export const AGENT_ATTR = {
   captionsDetail: "captions.detail",
   translation: "translation",
   translationDetail: "translation.detail",
+  voice: "voice",
+  voiceDetail: "voice.detail",
 } as const;
 
 /** Shared by captions and translation. */
@@ -95,6 +100,8 @@ export const TRACK = {
   echoProbe: "echo-probe",
   /** Agent → client: a test tone played through the speaker to check AEC. */
   tone: "tone",
+  /** Agent → client: the translation, spoken (Phase 4). */
+  voice: "voice",
 } as const;
 
 export type ControlMessage =
@@ -219,5 +226,39 @@ export function decodeTranslation(payload: Uint8Array): TranslationMessage | nul
     final: m.final,
     ...(mtMs !== undefined ? { mtMs } : {}),
     ...(flushMs !== undefined ? { flushMs } : {}),
+  };
+}
+
+/**
+ * Sent when a sentence's translated speech starts playing. `lagMs` runs from
+ * the sentence's source speech reaching the agent to its first translated
+ * audio leaving it: the agent-side ear-to-voice lag. `backlogMs` is audio
+ * still queued behind it.
+ */
+export interface VoiceMessage {
+  type: "voice";
+  sentence: number;
+  lagMs?: number;
+  backlogMs?: number;
+}
+
+export function decodeVoice(payload: Uint8Array): VoiceMessage | null {
+  let value: unknown;
+  try {
+    value = JSON.parse(new TextDecoder().decode(payload));
+  } catch {
+    return null;
+  }
+  if (!value || typeof value !== "object") return null;
+  const m = value as Record<string, unknown>;
+  if (m.type !== "voice" || !Number.isInteger(m.sentence) || (m.sentence as number) < 0) return null;
+  const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : undefined);
+  const lagMs = num(m.lagMs);
+  const backlogMs = num(m.backlogMs);
+  return {
+    type: "voice",
+    sentence: m.sentence as number,
+    ...(lagMs !== undefined ? { lagMs } : {}),
+    ...(backlogMs !== undefined ? { backlogMs } : {}),
   };
 }

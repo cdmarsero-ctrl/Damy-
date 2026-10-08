@@ -16,6 +16,7 @@ import { applyCaption, CAPTION_TARGET_MS, type CaptionState, EMPTY_CAPTIONS } fr
 import { applyTranslation, EMPTY_TRANSLATION, FLUSH_TARGET_MS, type TranslationState } from "./translation";
 import {
   assessLeak,
+  EAR_TO_VOICE_TARGET_MS,
   isOnset,
   type LatencySummary,
   type LeakAssessment,
@@ -32,17 +33,19 @@ import {
   decodeCaption,
   decodeControl,
   decodeTranslation,
+  decodeVoice,
   encodeControl,
   TRACK,
   TRANSLATION_TOPIC,
   type TranslationLanguage,
+  VOICE_TOPIC,
 } from "./protocol";
 
 /**
  * Browser side of an interpreter session: capture with verified AEC, join the
  * LiveKit room, publish the mic, show the agent's live captions (Phase 2)
- * and simultaneous translation (Phase 3), and run the Phase 1 diagnostics
- * (loopback timing, echo test).
+ * and simultaneous translation (Phase 3), play the translation's voice
+ * (Phase 4), and run the Phase 1 diagnostics (loopback timing, echo test).
  *
  * Kept outside React so the media lifecycle (tracks, AudioContext, timers,
  * room) lives in one object with one `stop()`, and the component only
@@ -77,9 +80,20 @@ export interface SessionState {
   translationDetail: string;
   /** End of speech to complete translation, p50, against the Phase 3 target. */
   flushLatency: LatencySummary | null;
+  voiceStatus: CaptionsStatus | null;
+  voiceDetail: string;
+  /** Source speech to translated voice (agent-measured), p50, against the Phase 4 target. */
+  voiceLag: LatencySummary | null;
+  /** Play the translated voice; captions and translation text continue either way. */
+  speak: boolean;
+  /** The voice track is audibly playing right now. */
+  speaking: boolean;
 }
 
 const AGENT_JOIN_TIMEOUT_MS = 15_000;
+/** Above this the voice track counts as speaking (the indicator only). */
+const SPEAKING_DB = -45;
+const VOICE_LAG_WINDOW = 100;
 const PING_INTERVAL_MS = 1_000;
 const PING_WINDOW = 20;
 const PROBE_BURSTS = 5;
@@ -113,6 +127,11 @@ export const INITIAL_STATE: SessionState = {
   translationStatus: null,
   translationDetail: "",
   flushLatency: null,
+  voiceStatus: null,
+  voiceDetail: "",
+  voiceLag: null,
+  speak: true,
+  speaking: false,
 };
 
 const CAPTIONS_STATUSES: readonly string[] = ["starting", "live", "unavailable", "error"];
@@ -126,6 +145,8 @@ export class InterpreterClient {
   private probeGain: GainNode | null = null;
   private probeOut: MediaStreamAudioDestinationNode | null = null;
   private echoProbeAnalyser: AnalyserNode | null = null;
+  private voiceAnalyser: AnalyserNode | null = null;
+  private voiceLags: number[] = [];
   private elements = new Map<string, HTMLMediaElement>();
   private timers: ReturnType<typeof setInterval>[] = [];
   private pings = new Map<number, number>();
@@ -189,7 +210,14 @@ export class InterpreterClient {
       this.set({ phase: "live" });
       this.timers.push(setInterval(() => this.ping(), PING_INTERVAL_MS));
       this.timers.push(
-        setInterval(() => this.set({ micLevelDb: this.level(this.micAnalyser) }), 100),
+        setInterval(
+          () =>
+            this.set({
+              micLevelDb: this.level(this.micAnalyser),
+              speaking: this.voiceAnalyser !== null && this.level(this.voiceAnalyser) > SPEAKING_DB,
+            }),
+          100,
+        ),
       );
     } catch (err) {
       this.fail(describeError(err));
@@ -268,6 +296,9 @@ export class InterpreterClient {
 
     if (pub.trackName === TRACK.echoMic) {
       el.muted = !this.state.monitor;
+    } else if (pub.trackName === TRACK.voice) {
+      el.muted = !this.state.speak;
+      this.voiceAnalyser = this.analyser(new MediaStream([track.mediaStreamTrack]), 1024);
     } else if (pub.trackName === TRACK.echoProbe) {
       // Analysed, never heard. Chrome only delivers remote WebRTC audio to
       // Web Audio while a media element is also consuming it, hence the
@@ -288,10 +319,19 @@ export class InterpreterClient {
       captionsDetail: agent.attributes[AGENT_ATTR.captionsDetail] ?? this.state.captionsDetail,
       translationStatus: status(AGENT_ATTR.translation) ?? this.state.translationStatus,
       translationDetail: agent.attributes[AGENT_ATTR.translationDetail] ?? this.state.translationDetail,
+      voiceStatus: status(AGENT_ATTR.voice) ?? this.state.voiceStatus,
+      voiceDetail: agent.attributes[AGENT_ATTR.voiceDetail] ?? this.state.voiceDetail,
     });
   }
 
   private onData(payload: Uint8Array, topic?: string) {
+    if (topic === VOICE_TOPIC) {
+      const message = decodeVoice(payload);
+      if (message?.lagMs === undefined) return;
+      this.voiceLags = [...this.voiceLags, message.lagMs].slice(-VOICE_LAG_WINDOW);
+      this.set({ voiceLag: summariseLatency(this.voiceLags, EAR_TO_VOICE_TARGET_MS) });
+      return;
+    }
     if (topic === TRANSLATION_TOPIC) {
       const message = decodeTranslation(payload);
       if (!message) return;
@@ -429,6 +469,12 @@ export class InterpreterClient {
       await sleep(LEVEL_SAMPLE_MS);
     }
     return levels;
+  }
+
+  setSpeak(on: boolean) {
+    const el = this.elements.get(TRACK.voice);
+    if (el) el.muted = !on;
+    this.set({ speak: on });
   }
 
   setMonitor(on: boolean) {

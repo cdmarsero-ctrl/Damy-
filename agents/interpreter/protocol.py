@@ -22,6 +22,8 @@ DEFAULT_LANGUAGE = "multi"
 
 # Agent -> client translation stream; see translation.py.
 TRANSLATION_TOPIC = "interpreter.translation"
+# Agent -> client voice metrics (one message per spoken sentence); speech.py.
+VOICE_TOPIC = "interpreter.voice"
 
 # Language names are what the translation prompt uses, so they are spelled
 # out here rather than derived from the codes.
@@ -42,12 +44,16 @@ ATTR_CAPTIONS = "captions"  # "starting" | "live" | "unavailable" | "error"
 ATTR_CAPTIONS_DETAIL = "captions.detail"  # human-readable reason, may be ""
 ATTR_TRANSLATION = "translation"  # same values as ATTR_CAPTIONS
 ATTR_TRANSLATION_DETAIL = "translation.detail"
+ATTR_VOICE = "voice"  # same values as ATTR_CAPTIONS
+ATTR_VOICE_DETAIL = "voice.detail"
 
 TRACK_MIC = "mic"
 TRACK_PROBE = "probe"
 TRACK_ECHO_MIC = "echo-mic"
 TRACK_ECHO_PROBE = "echo-probe"
 TRACK_TONE = "tone"
+# Agent -> client: the translation, spoken.
+TRACK_VOICE = "voice"
 
 # Client tracks the loopback returns, and the name each comes back under.
 ECHOED_TRACKS = {TRACK_MIC: TRACK_ECHO_MIC, TRACK_PROBE: TRACK_ECHO_PROBE}

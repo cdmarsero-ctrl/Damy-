@@ -480,6 +480,19 @@ need doing; the evaluation needs real keys.
 4. **Exit criteria:** end-to-end ear-to-voice lag within §0 targets; MOS-style listening
    test ≥ 4.0 for naturalness.
 
+**Status: built.** `agents/interpreter/speech.py` speaks only committed text: one Cartesia
+context per sentence (`tts.py`), pieces sent as they commit and the context ended when
+the sentence is final, sentence-ordered playout onto the agent's `voice` track, and the
+§5.4 adaptive rate (1.12× above 1.5 s of backlog, back to normal under 0.5 s). The page
+plays the track through the remote WebRTC path (the AEC reference) and shows a voice-lag
+stat, measured on the agent from a sentence's first words arriving to its translation
+starting to play. Verified end to end with fake Deepgram, Anthropic and Cartesia servers:
+the voice plays in order with no retractions; voice lag was 1412 ms median with
+simulated 200 ms recognition, 250 ms model and 150 ms TTS, and 1024 ms with a 100 ms
+model. Before a sentence's first words can be spoken, two translator answers must agree,
+so model latency dominates; the real figure needs real keys. Voice selection in the UI,
+voice cloning (with consent) and the MOS listening test are still to do.
+
 ### Phase 5 — Echo hardening (1 week)
 1. Transcript-level echo guard (§6.3.1) with unit tests.
 2. Protected mode and headphone prompt.

@@ -66,6 +66,9 @@ services:
       # Live translation (needs captions too).
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       INTERPRETER_MT_MODEL: ${INTERPRETER_MT_MODEL:-claude-haiku-5-5}
+      # Spoken translation (needs translation too).
+      CARTESIA_API_KEY: ${CARTESIA_API_KEY:-}
+      CARTESIA_VOICE_ID: ${CARTESIA_VOICE_ID:-}
 
 volumes:
   lexicon-db:
