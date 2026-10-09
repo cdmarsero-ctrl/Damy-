@@ -5,9 +5,9 @@ The server-side half of the live interpreter
 worker: the web app's `POST /api/interpreter/session` mints a room token that
 dispatches this agent into a fresh room alongside the learner.
 
-**Current stage: Phase 4, spoken translation**: live captions, simultaneous
-translation and a translated voice, with the Phase 1 loopback kept as
-connection diagnostics.
+**Current stage: Phase 5, echo protection**: live captions, simultaneous
+translation and a translated voice that is safe with speakers on, with the
+Phase 1 loopback kept as connection diagnostics.
 
 | Track or message | Direction | Purpose |
 |---|---|---|
@@ -18,6 +18,8 @@ connection diagnostics.
 | committed translation → `voice` track | agent → learner | The translation spoken (Cartesia), sentence by sentence. |
 | `interpreter.voice` | agent → learner | Per spoken sentence: ear-to-voice lag and queued audio. |
 | `voice`, `voice.detail` attributes | agent | Speech status, same values as captions. |
+| `echo`, `echo.detail` attributes | agent | Echo guard: `off` (nothing spoken), `clean`, or `leaking` (it keeps removing the agent's own voice from the mic). |
+| `echo-check` on `interpreter.control` → `interpreter.echo` | learner → agent → learner | Speech check: the agent says a fixed phrase and reports words spoken, heard and let through. |
 | `mic` → `echo-mic` | learner → agent → learner | Hear yourself after the round trip; checks AEC by ear. |
 | `probe` → `echo-probe` | learner → agent → learner | Tone bursts timed by the browser to measure the audio round trip. |
 | `tone` | agent → learner | A test tone played through the speaker for the automated echo test. |
@@ -25,8 +27,7 @@ connection diagnostics.
 
 The caption and translation languages come from the learner's participant
 metadata, which the web app signs into their token; the agent re-validates
-them against `CAPTION_LANGUAGES` and `LANGUAGE_NAMES`. Phase 5 adds echo
-safeguards for speakers-on use.
+them against `CAPTION_LANGUAGES` and `LANGUAGE_NAMES`.
 
 ### How captioning works
 
@@ -94,6 +95,32 @@ safeguards for speakers-on use.
   first words reaching it (caption time minus recognition latency) to its
   translated audio starting to play. That's the agent's ear-to-voice; add
   network and playout on each side.
+
+### How echo is kept out
+
+The browser's echo canceller is the first defence: the voice arrives as a
+remote WebRTC track, which is its reference (§6.1). Two more layers cover what
+it misses:
+
+- **Echo guard** (`echo_guard.py`). The speaker tells the guard, for every
+  frame it plays, which sentence and its text. The captioner passes each
+  recognition result through the guard before captions or translation see it.
+  A word is echo when it matches played text (ignoring case, accents and
+  punctuation, allowing a misrecognised letter or two in longer words) and
+  arrived within 2 s of that text playing. Two or more such words in the
+  played order are removed. A single one only if it is the whole result or
+  continues an echo already removed, so a learner's "no" over a Spanish "no"
+  survives.
+- **Protected mode** (the page). When the browser reports echo cancellation
+  off, or the guard removes echo in 3 final results within a minute (`echo`
+  turns `leaking`), the page mutes the voice and asks for headphones. It stays
+  muted until the learner confirms; captions and text carry on.
+
+The **speech check** on the page measures a device: the agent speaks a fixed
+greeting in the target language through the normal voice path. It reports
+how many of its words the microphone delivered (`heardWords`, what echo
+cancellation let through) and how many of those also got past the guard
+(`passedWords`). The learner stays quiet for it.
 
 ## Run it locally
 
@@ -164,6 +191,37 @@ DEEPGRAM_API_KEY=fake DEEPGRAM_URL=ws://127.0.0.1:8765/v1/listen \
 In `start` (production) mode the worker stops accepting jobs once host CPU
 passes 70 %; `dev` mode doesn't. The LiveKit server applies its own load check
 in both modes, though (see Troubleshooting).
+
+## Phase 5 exit criteria
+
+- **Zero self-transcribed words across the device matrix with speakers on**:
+  the speech check's `passedWords` must be 0 for each browser × OS × output
+  (laptop speakers, phone speakerphone, Bluetooth) with real recognition.
+  **Not run yet**: it needs real devices and a Deepgram key. Record each run's
+  "heard" and "let through" counts. "Heard" > 0 with "let through" 0 means the
+  guard caught what AEC missed.
+
+Verified so far:
+- **The guard** (`tests/test_echo.py`):
+  - unit tests;
+  - a captioner-level test showing echo removed before captions and `leaking`
+    reported;
+  - a simulated speakers-on run. The speaker plays a translation through fake
+    TTS, and the echo comes back 300–900 ms late, misheard and split into 2–6
+    word results among the learner's own words. Across 50 randomised runs in
+    the suite (and 500 offline), no echoed word got through and no learner
+    word was lost.
+- **In headless Chromium with the fakes**:
+  - the speech check ran end to end: 8 words spoken, voice playing, 0 heard,
+    since a fake microphone has no acoustic path;
+  - with the browser reporting echo cancellation off, protected mode muted the
+    voice, and confirming headphones restored it.
+
+Limit: the guard can only match echo that the source recogniser writes in the
+target language's script. Spanish heard by an English or multilingual
+recogniser matches. Japanese heard by an English recogniser (or the reverse)
+usually won't, so for those pairs echo cancellation and headphones are the
+defence.
 
 ## Phase 4 exit criteria
 
@@ -244,10 +302,11 @@ pytest tests
 ```
 
 The tests cover the pure modules (protocol, captions, gate, tone, commit
-policy, playout and speed rules), drive the translation loop with a scripted
-translator, run the Deepgram client, the Claude adapter (through the real
-Anthropic SDK) and the speaker against the three fakes, and check that
-protocol constants and language lists match `src/lib/interpreter/protocol.ts`.
+policy, playout and speed rules, echo guard), drive the translation loop with
+a scripted translator, run the Deepgram client, the Claude adapter (through
+the real Anthropic SDK) and the speaker against the three fakes, simulate
+speakers-on echo, and check that protocol constants and language lists match
+`src/lib/interpreter/protocol.ts`.
 They need no accounts or servers.
 
 ## Troubleshooting
@@ -274,6 +333,10 @@ They need no accounts or servers.
   `CARTESIA_VOICE_ID`, plus working translation. A rejected key stops speech
   for the session; text carries on. If one sentence fails to synthesise it is
   skipped so later sentences aren't held up.
+- **The voice is muted with "use headphones"**: the browser reported echo
+  cancellation off on the microphone, or the agent kept removing its own voice
+  from it (`echo` = `leaking`). Wear headphones and confirm on the page. To
+  see how bad the echo is on a device, run the speech check with speakers on.
 - **Captions stay on "Starting" / "retrying"**: the agent can't reach
   Deepgram. It uses `HTTPS_PROXY` if set (unlike the LiveKit connection below),
   so check the proxy or `DEEPGRAM_URL`.

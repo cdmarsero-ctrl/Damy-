@@ -213,3 +213,29 @@ def test_a_bad_key_stops_speech_with_a_clear_status():
         return statuses
 
     assert asyncio.run(scenario())[-1] == ("error", "The speech service rejected the agent's API key.")
+
+
+def test_reports_what_it_plays_and_keeps_echo_check_sentences_off_the_voice_topic():
+    async def scenario():
+        _, runner, url = await _serve()
+        played, published = [], []
+        try:
+            async with aiohttp.ClientSession() as session:
+                speaker = _speaker(session, url, fake_cartesia.API_KEY, [], published, [])
+                speaker.on_playing = lambda sentence, text: played.append((sentence, text))
+                task = asyncio.create_task(speaker.run())
+                speaker.on_commit(0, "Ayer el equipo", False, None)
+                speaker.on_commit(0, "cerró el trato.", True, None)
+                speaker.say(-1, "Buenos días a todos.")
+                await asyncio.sleep(1.0)
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+        finally:
+            await runner.cleanup()
+        return played, published
+
+    played, published = asyncio.run(scenario())
+    texts = {sentence: text for sentence, text in played}
+    # The full text queued for the sentence, joined as it is spoken.
+    assert texts == {0: "Ayer el equipo cerró el trato.", -1: "Buenos días a todos."}
+    assert [m["sentence"] for m in published] == [0]

@@ -190,6 +190,11 @@ class TranslationLoop:
         self._inflight_final = final
         try:
             await asyncio.wait({self._inflight})
+        except asyncio.CancelledError:
+            # The loop is stopping: don't leave the request running unowned
+            # (its error, once the client closes, would go unretrieved).
+            self._inflight.cancel()
+            raise
         finally:
             task, self._inflight = self._inflight, None
         if task.cancelled():

@@ -43,6 +43,9 @@ export const TRANSLATION_TOPIC = "interpreter.translation";
 /** Agent → client voice metrics, one message per spoken sentence. */
 export const VOICE_TOPIC = "interpreter.voice";
 
+/** Agent → client echo-check results (Phase 5). */
+export const ECHO_TOPIC = "interpreter.echo";
+
 /**
  * Languages to translate into. Mirrors LANGUAGE_NAMES in
  * agents/interpreter/protocol.py (tests on both sides keep them identical).
@@ -83,10 +86,19 @@ export const AGENT_ATTR = {
   translationDetail: "translation.detail",
   voice: "voice",
   voiceDetail: "voice.detail",
+  echo: "echo",
+  echoDetail: "echo.detail",
 } as const;
 
 /** Shared by captions and translation. */
 export type CaptionsStatus = "starting" | "live" | "unavailable" | "error";
+
+/**
+ * The agent's echo guard. "leaking": it keeps removing the agent's own voice
+ * from the learner's microphone, i.e. echo cancellation isn't coping.
+ */
+export type EchoStatus = "off" | "clean" | "leaking";
+export const ECHO_STATUSES: readonly EchoStatus[] = ["off", "clean", "leaking"];
 
 /** Track names. The agent republishes each client track it hears as `echo-<name>`. */
 export const TRACK = {
@@ -108,7 +120,8 @@ export type ControlMessage =
   | { type: "ping"; id: number; sentAt: number }
   | { type: "pong"; id: number; sentAt: number }
   | { type: "tone"; durationMs: number }
-  | { type: "tone-started"; durationMs: number };
+  | { type: "tone-started"; durationMs: number }
+  | { type: "echo-check" };
 
 export function encodeControl(message: ControlMessage): Uint8Array<ArrayBuffer> {
   return new TextEncoder().encode(JSON.stringify(message));
@@ -136,6 +149,8 @@ export function decodeControl(payload: Uint8Array): ControlMessage | null {
       return finite(m.durationMs) && m.durationMs > 0
         ? { type: m.type, durationMs: m.durationMs }
         : null;
+    case "echo-check":
+      return { type: "echo-check" };
     default:
       return null;
   }
@@ -261,4 +276,30 @@ export function decodeVoice(payload: Uint8Array): VoiceMessage | null {
     ...(lagMs !== undefined ? { lagMs } : {}),
     ...(backlogMs !== undefined ? { backlogMs } : {}),
   };
+}
+
+/**
+ * Result of an echo check: the agent spoke a fixed phrase of `spokenWords`
+ * words; `heardWords` of them came back through the microphone (what echo
+ * cancellation let through) and `passedWords` also got past the agent's echo
+ * guard into captions. `error` instead when the check couldn't run.
+ */
+export type EchoReport =
+  | { type: "echo-report"; spokenWords: number; heardWords: number; passedWords: number }
+  | { type: "echo-report"; error: string };
+
+export function decodeEchoReport(payload: Uint8Array): EchoReport | null {
+  let value: unknown;
+  try {
+    value = JSON.parse(new TextDecoder().decode(payload));
+  } catch {
+    return null;
+  }
+  if (!value || typeof value !== "object") return null;
+  const m = value as Record<string, unknown>;
+  if (m.type !== "echo-report") return null;
+  if (typeof m.error === "string") return { type: "echo-report", error: m.error };
+  const count = (v: unknown): v is number => Number.isInteger(v) && (v as number) >= 0;
+  if (!count(m.spokenWords) || !count(m.heardWords) || !count(m.passedWords)) return null;
+  return { type: "echo-report", spokenWords: m.spokenWords, heardWords: m.heardWords, passedWords: m.passedWords };
 }

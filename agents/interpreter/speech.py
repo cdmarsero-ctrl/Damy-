@@ -132,6 +132,7 @@ class _SentenceState:
     ended: bool = False
     speech_started: float | None = None
     first_audio_reported: bool = False
+    text: str = ""  # everything queued for TTS, as it will be spoken
 
 
 @dataclass
@@ -146,6 +147,9 @@ class Speaker:
     buffer_ms: int = 300
     clock: Callable[[], float] = time.monotonic
     session_tag: str = "s"
+    # Told, for every frame played, which sentence and its text: the echo
+    # guard's record of what the learner's microphone may hear (§6.3.1).
+    on_playing: Callable[[int, str], None] | None = None
     _queue: asyncio.Queue = field(default_factory=asyncio.Queue)
     _playout: PlayoutBuffer = field(default_factory=PlayoutBuffer)
     _sentences: dict[int, _SentenceState] = field(default_factory=dict)
@@ -164,9 +168,16 @@ class Speaker:
             state.ended = True
             return
         self._queue.put_nowait((sentence, delta, final))
+        state.text += piece_text(delta, first=state.pieces_queued == 0, language=self.language)
         state.pieces_queued += 1
         if final:
             state.ended = True
+
+    def say(self, sentence: int, text: str) -> None:
+        """Speaks fixed text as its own sentence (the echo check). Use negative
+        sentence numbers so they never collide with translated sentences;
+        they are not reported on the voice topic."""
+        self.on_commit(sentence, text, True, None)
 
     async def run(self) -> None:
         player = asyncio.create_task(self._play(), name="speech-play")
@@ -274,7 +285,7 @@ class Speaker:
                 continue
             sentence, pcm = item
             state = self._sentences.get(sentence)
-            if state and not state.first_audio_reported:
+            if state and not state.first_audio_reported and sentence >= 0:
                 state.first_audio_reported = True
                 message: dict = {"type": "voice", "sentence": sentence}
                 if state.speech_started is not None:
@@ -284,6 +295,8 @@ class Speaker:
                 message["backlogMs"] = round(self._playout.backlog_seconds() * 1000, 1)
                 await self.publish(message)
             await self.sink(pcm)
+            if state and self.on_playing is not None:
+                self.on_playing(sentence, state.text)
 
     async def _status_once(self, status: str, detail: str) -> None:
         if (status, detail) != self._status:

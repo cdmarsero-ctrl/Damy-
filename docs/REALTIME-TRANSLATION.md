@@ -499,6 +499,38 @@ voice cloning (with consent) and the MOS listening test are still to do.
 3. Automated AEC harness on the device matrix (§6.4).
 4. **Exit criteria:** zero self-transcribed words across the matrix with speakers on.
 
+**Status: built; the device matrix is still to run.** `agents/interpreter/echo_guard.py`
+records what the speaker plays and when (per frame), and removes recognised words that
+match it, in order, inside a 2 s echo window, before they reach captions or translation.
+Matching is accent-, case- and punctuation-insensitive and tolerates misrecognition
+(similarity ≥ 0.8 for words of 4+ letters). A lone matching word is kept unless it is the
+whole result or continues an echo already being removed, so a learner's cognate ("no")
+survives. When echo is removed in 3 final results within 60 s the agent reports `echo`
+`leaking`. The page then enters protected mode, as it does when the browser reports echo
+cancellation off: the voice is muted, with a banner, until the learner confirms
+headphones; captions and text carry on. The double-talk gain (§6.3, item 2) is not built: the
+guard makes it unnecessary for correctness. For §6.4 the page has a **speech check**: the
+agent says a fixed phrase in the target language on the voice track. It reports how many
+words the microphone delivered (what AEC let through) and how many also got past the
+guard. Pass is 0 past the guard.
+
+Verified so far:
+- **Simulated speakers-on run** (a test): a real speaker run against the fake TTS, with
+  the echo fed back 300–900 ms late, misheard and split across results, while the
+  learner keeps talking. Across 50 randomised runs in CI and 500 offline, no echoed word
+  got through and no learner word was lost.
+- **Browser**: the speech check runs end to end (8 words spoken, 0 heard; headless
+  Chromium has no acoustic path). Protected mode mutes and restores the voice when the
+  browser reports AEC off.
+
+Still to do: the real device matrix (browser × OS × laptop speakers / phone
+speakerphone / Bluetooth, with real ASR), and with it the exit criterion.
+
+Known limit: the guard needs the source recogniser to write the echo in the target
+language's script. Spanish heard by an English or multilingual recogniser matches. Japanese
+or Chinese heard by an English recogniser, or English heard by a Japanese one, usually
+won't. There AEC and headphones remain the defence.
+
 ### Phase 6 — Production readiness (1–2 weeks)
 1. Per-stage OpenTelemetry spans; dashboard of ear-to-voice lag p50/p95 per pair.
 2. Resilience: auto-reconnect of each vendor socket with replay of the un-finalized audio

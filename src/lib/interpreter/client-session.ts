@@ -13,6 +13,7 @@ import { api, ApiClientError } from "@/lib/client";
 
 import { assessCapture, CAPTURE_CONSTRAINTS, type CaptureCheck, tryUpgradeToSystemWideAec } from "./aec";
 import { applyCaption, CAPTION_TARGET_MS, type CaptionState, EMPTY_CAPTIONS } from "./captions";
+import { assessEchoReport, type EchoAssessment, nextProtection, type ProtectedReason } from "./echo";
 import { applyTranslation, EMPTY_TRANSLATION, FLUSH_TARGET_MS, type TranslationState } from "./translation";
 import {
   assessLeak,
@@ -30,8 +31,13 @@ import {
   type CaptionsStatus,
   CONTROL_TOPIC,
   type ControlMessage,
+  ECHO_STATUSES,
+  ECHO_TOPIC,
+  type EchoReport,
+  type EchoStatus,
   decodeCaption,
   decodeControl,
+  decodeEchoReport,
   decodeTranslation,
   decodeVoice,
   encodeControl,
@@ -45,7 +51,9 @@ import {
  * Browser side of an interpreter session: capture with verified AEC, join the
  * LiveKit room, publish the mic, show the agent's live captions (Phase 2)
  * and simultaneous translation (Phase 3), play the translation's voice
- * (Phase 4), and run the Phase 1 diagnostics (loopback timing, echo test).
+ * (Phase 4), keep that voice from feeding back into the mic (Phase 5:
+ * protected mode, echo check), and run the Phase 1 diagnostics (loopback
+ * timing, tone echo test).
  *
  * Kept outside React so the media lifecycle (tracks, AudioContext, timers,
  * room) lives in one object with one `stop()`, and the component only
@@ -53,7 +61,7 @@ import {
  */
 
 export type Phase = "idle" | "starting" | "waiting-agent" | "live" | "ended" | "error";
-export type Busy = "timing" | "aec" | null;
+export type Busy = "timing" | "aec" | "echo-check" | null;
 
 export interface SessionState {
   phase: Phase;
@@ -88,6 +96,15 @@ export interface SessionState {
   speak: boolean;
   /** The voice track is audibly playing right now. */
   speaking: boolean;
+  /** The agent's echo guard; null until the agent has joined. */
+  echoStatus: EchoStatus | null;
+  echoDetail: string;
+  /** Set while the voice is held muted for want of headphones (§6.3.3). */
+  protectedMode: ProtectedReason | null;
+  /** The learner said they are wearing headphones. */
+  headphones: boolean;
+  /** Result of the last spoken echo check. */
+  echoCheck: EchoAssessment | null;
 }
 
 const AGENT_JOIN_TIMEOUT_MS = 15_000;
@@ -103,6 +120,8 @@ const PROBE_POLL_MS = 4;
 const LEVEL_SAMPLE_MS = 50;
 const TONE_MS = 2_000;
 const LEAK_WINDOW_MS = 1_200;
+/** The agent speaks a ~3 s phrase and then listens for a few seconds. */
+const ECHO_CHECK_TIMEOUT_MS = 30_000;
 /** Skip the start of the tone while it is still in flight to the speaker. */
 const TONE_SETTLE_MS = 500;
 
@@ -132,6 +151,11 @@ export const INITIAL_STATE: SessionState = {
   voiceLag: null,
   speak: true,
   speaking: false,
+  echoStatus: null,
+  echoDetail: "",
+  protectedMode: null,
+  headphones: false,
+  echoCheck: null,
 };
 
 const CAPTIONS_STATUSES: readonly string[] = ["starting", "live", "unavailable", "error"];
@@ -153,6 +177,7 @@ export class InterpreterClient {
   private rtts: number[] = [];
   private nextPingId = 1;
   private stopped = false;
+  private echoReport: ((report: EchoReport) => void) | null = null;
 
   constructor(private readonly onChange: (state: SessionState) => void) {}
 
@@ -237,6 +262,7 @@ export class InterpreterClient {
     this.mic = stream.getAudioTracks()[0];
     await tryUpgradeToSystemWideAec(this.mic);
     this.set({ capture: assessCapture(this.mic.getSettings()) });
+    this.updateProtection();
 
     this.micAnalyser = this.analyser(new MediaStream([this.mic]), 2048);
   }
@@ -321,10 +347,34 @@ export class InterpreterClient {
       translationDetail: agent.attributes[AGENT_ATTR.translationDetail] ?? this.state.translationDetail,
       voiceStatus: status(AGENT_ATTR.voice) ?? this.state.voiceStatus,
       voiceDetail: agent.attributes[AGENT_ATTR.voiceDetail] ?? this.state.voiceDetail,
+      echoStatus: echoStatus(agent.attributes[AGENT_ATTR.echo]) ?? this.state.echoStatus,
+      echoDetail: agent.attributes[AGENT_ATTR.echoDetail] ?? this.state.echoDetail,
     });
+    this.updateProtection();
+  }
+
+  /** Enters protected mode (muting the voice) when echo can't be trusted. */
+  private updateProtection() {
+    const { capture, echoStatus, headphones, protectedMode } = this.state;
+    const next = nextProtection(protectedMode, capture, echoStatus, headphones);
+    if (next === protectedMode) return;
+    this.set({ protectedMode: next });
+    if (next) this.setSpeak(false);
+  }
+
+  /** The learner is wearing headphones: leave protected mode, voice back on. */
+  confirmHeadphones() {
+    this.set({ headphones: true });
+    this.updateProtection();
+    this.setSpeak(true);
   }
 
   private onData(payload: Uint8Array, topic?: string) {
+    if (topic === ECHO_TOPIC) {
+      const report = decodeEchoReport(payload);
+      if (report) this.echoReport?.(report);
+      return;
+    }
     if (topic === VOICE_TOPIC) {
       const message = decodeVoice(payload);
       if (message?.lagMs === undefined) return;
@@ -461,6 +511,38 @@ export class InterpreterClient {
     }
   }
 
+  /**
+   * The agent speaks a fixed phrase in the target language on the voice
+   * track, exactly as it speaks translations, and reports how many of its
+   * words came back through the microphone and how many of those also got
+   * past its echo guard (§6.4). The learner stays quiet. The voice plays for
+   * the check even if it is muted for the session.
+   */
+  async runEchoCheck() {
+    if (this.state.phase !== "live" || this.state.busy) return;
+    this.set({ busy: "echo-check", error: null, echoCheck: null });
+    const voiceEl = this.elements.get(TRACK.voice);
+    if (voiceEl) voiceEl.muted = false;
+    try {
+      const report = await new Promise<EchoReport | null>((resolve) => {
+        const timeout = setTimeout(() => resolve(null), ECHO_CHECK_TIMEOUT_MS);
+        this.echoReport = (r) => {
+          clearTimeout(timeout);
+          resolve(r);
+        };
+        this.send({ type: "echo-check" }, true);
+      });
+      if (this.stopped) return;
+      this.set({
+        echoCheck: assessEchoReport(report ?? { type: "echo-report", error: "The agent did not answer the echo check." }),
+      });
+    } finally {
+      this.echoReport = null;
+      if (voiceEl) voiceEl.muted = !this.state.speak;
+      this.set({ busy: null });
+    }
+  }
+
   private async sampleMic(durationMs: number): Promise<number[]> {
     const levels: number[] = [];
     const end = performance.now() + durationMs;
@@ -523,6 +605,11 @@ export class InterpreterClient {
     await this.room?.disconnect().catch(() => undefined);
     await this.ctx?.close().catch(() => undefined);
   }
+}
+
+function echoStatus(value: string | undefined): EchoStatus | null {
+  if (value === undefined) return null;
+  return (ECHO_STATUSES as readonly string[]).includes(value) ? (value as EchoStatus) : null;
 }
 
 function describeError(err: unknown): string {

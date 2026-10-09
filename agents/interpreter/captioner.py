@@ -22,6 +22,7 @@ from livekit.agents import vad as agents_vad
 
 from asr import SAMPLE_RATE, DeepgramError, DeepgramStream, listen_url
 from captions import ArrivalClock, AsrResult, CaptionTracker, UtteranceEnd, parse_deepgram
+from echo_guard import EchoGuard
 from gate import SpeechGate
 
 logger = logging.getLogger("interpreter.captions")
@@ -63,6 +64,8 @@ class Captioner:
         language: str,
         publish: Publish,
         set_status: SetStatus,
+        echo_guard: EchoGuard | None = None,
+        set_echo_status: SetStatus | None = None,
     ) -> None:
         self._vad = vad
         self._api_key = api_key
@@ -74,6 +77,10 @@ class Captioner:
         self._max_queued = int(MAX_QUEUED_S * 1000 / FRAME_MS)
         self._clock = ArrivalClock(SAMPLE_RATE)
         self._tracker = CaptionTracker()
+        self._guard = echo_guard
+        self._set_echo_status = set_echo_status
+        # The session publishes "clean" when it starts the guard.
+        self._echo_status = "clean"
 
     async def run(self, track: rtc.Track) -> None:
         await self._set_status("starting", "")
@@ -188,6 +195,10 @@ class Captioner:
     async def _on_message(self, raw: str) -> None:
         event = parse_deepgram(raw)
         if isinstance(event, AsrResult):
+            if self._guard is not None:
+                arrivals = [self._clock.arrival_of(w.end) for w in event.words]
+                event = self._guard.filter(event, arrivals)
+                await self._report_echo()
             latency_ms = None
             if event.audio_end is not None:
                 arrived = self._clock.arrival_of(event.audio_end)
@@ -200,3 +211,16 @@ class Captioner:
             message = None
         if message is not None:
             await self._publish(message)
+
+    async def _report_echo(self) -> None:
+        status = "leaking" if self._guard.leaking() else "clean"
+        if status == self._echo_status or self._set_echo_status is None:
+            return
+        self._echo_status = status
+        detail = (
+            "The agent keeps hearing its own voice through your microphone and is removing it. "
+            "Headphones stop it at the source."
+            if status == "leaking"
+            else ""
+        )
+        await self._set_echo_status(status, detail)

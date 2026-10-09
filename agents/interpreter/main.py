@@ -13,7 +13,10 @@ Joins each interpreter room the web app dispatches it to and:
   `echo-probe`, answers data-channel pings, and plays a test tone on request
   so the client can check echo cancellation.
 
-Phase 5 hardens echo handling for speakers-on use.
+* Phase 5: removes its own voice from the learner's captions when echo
+  cancellation lets it through (echo_guard.py), reports when that keeps
+  happening, and runs an echo check on request.
+
 See docs/REALTIME-TRANSLATION.md.
 
 Run:  python main.py dev     (local, auto-reload)
@@ -36,15 +39,19 @@ from livekit.plugins import silero
 
 from asr import DEEPGRAM_URL
 from captioner import Captioner
+from echo_guard import CHECK_PHRASES, ECHO_DELAY_S, EchoGuard
 from mt import DEFAULT_MODEL, ClaudeTranslator, TranslationError, language_label
 from protocol import (
     ATTR_CAPTIONS,
     ATTR_CAPTIONS_DETAIL,
+    ATTR_ECHO,
+    ATTR_ECHO_DETAIL,
     ATTR_TRANSLATION,
     ATTR_TRANSLATION_DETAIL,
     ATTR_VOICE,
     ATTR_VOICE_DETAIL,
     CAPTIONS_TOPIC,
+    ECHO_TOPIC,
     LANGUAGE_NAMES,
     TRANSLATION_TOPIC,
     VOICE_TOPIC,
@@ -53,6 +60,7 @@ from protocol import (
     TRACK_MIC,
     TRACK_TONE,
     TRACK_VOICE,
+    EchoCheck,
     Ping,
     ToneRequest,
     decode_control,
@@ -86,6 +94,11 @@ TTS_MODEL = os.environ.get("INTERPRETER_TTS_MODEL", DEFAULT_TTS_MODEL)
 TTS_BUFFER_MS = int(os.environ.get("INTERPRETER_TTS_BUFFER_MS", "300"))
 # The voice track's source queue doubles as the playout jitter buffer (§5.4).
 VOICE_JITTER_MS = 200
+# Echo check (§6.4): how long to listen after the phrase has played (any echo
+# arrives within ECHO_DELAY_S; the rest lets its final result land), and how
+# long to wait for the phrase to play at all.
+CHECK_TAIL_S = ECHO_DELAY_S + 1.0
+CHECK_TIMEOUT_S = 20.0
 
 # Latency at the agent is bounded on both sides of the echo. Input and output
 # run at the same real-time rate, so any backlog a stall creates would never
@@ -104,6 +117,8 @@ class _Translation:
     task: asyncio.Task[None]
     client: anthropic.AsyncAnthropic
     speech: asyncio.Task[None] | None = None
+    speaker: Speaker | None = None
+    guard: EchoGuard | None = None
 
     async def close(self) -> None:
         for task in (self.task, self.speech):
@@ -131,10 +146,17 @@ class InterpreterSession:
         self.tone_task: asyncio.Task[None] | None = None
         self.background: set[asyncio.Task[None]] = set()
         self.captions: dict[str, asyncio.Task[None]] = {}
+        # The learner's translation pipeline, for echo checks; one per room.
+        self.translation: _Translation | None = None
+        self.checking = False
+        self.next_check = -1
+        self.ending: asyncio.Task[None] | None = None
+        self.closed = False
 
     async def start(self) -> None:
         tone_track = rtc.LocalAudioTrack.create_audio_track(TRACK_TONE, self.tone_source)
         await self.room.local_participant.publish_track(tone_track, publish_options())
+        await self.set_echo_status("off", "")
         if not DEEPGRAM_API_KEY:
             await self.set_captions_status(
                 "unavailable", "Speech recognition is not configured on the agent (DEEPGRAM_API_KEY)."
@@ -208,7 +230,9 @@ class InterpreterSession:
         finally:
             await stream.aclose()
             await source.aclose()
-            if self.room.isconnected():
+            # Ending the session: the track goes with the connection, and an
+            # unpublish now would start a renegotiation the disconnect waits on.
+            if self.room.isconnected() and not self.closed:
                 try:
                     await self.room.local_participant.unpublish_track(publication.sid)
                 except Exception:  # the SDK raises a private error type
@@ -225,16 +249,7 @@ class InterpreterSession:
         identity = participant.identity
 
         async def send(topic: str, message: dict) -> None:
-            # Reliable: finals and commits must arrive, and in order.
-            if not self.room.isconnected():
-                return
-            try:
-                await self.room.local_participant.publish_data(
-                    encode_message(message), reliable=True, destination_identities=[identity], topic=topic
-                )
-            except PublishDataError:
-                # The learner left mid-update; there is no one to deliver to.
-                logger.debug("dropped %s message: room closed", topic)
+            await self._send_to(identity, topic, message)
 
         translation = self.start_translation(
             language, target, lambda m: send(TRANSLATION_TOPIC, m), lambda m: send(VOICE_TOPIC, m)
@@ -245,6 +260,10 @@ class InterpreterSession:
             if translation is not None:
                 translation.loop.on_caption(message)
 
+        guard = translation.guard if translation is not None else None
+        if guard is not None:
+            self.translation = translation
+            await self.set_echo_status("clean", "")
         captioner = Captioner(
             vad=self.ctx.proc.userdata["vad"],
             api_key=DEEPGRAM_API_KEY,
@@ -252,6 +271,8 @@ class InterpreterSession:
             language=language,
             publish=publish,
             set_status=self.set_captions_status,
+            echo_guard=guard,
+            set_echo_status=self.set_echo_status,
         )
         try:
             await captioner.run(track)
@@ -262,6 +283,8 @@ class InterpreterSession:
             await self.set_captions_status("error", "Captioning stopped unexpectedly.")
         finally:
             if translation is not None:
+                if self.translation is translation:
+                    self.translation = None
                 await translation.close()
 
     async def set_captions_status(self, status: str, detail: str) -> None:
@@ -289,6 +312,10 @@ class InterpreterSession:
             model=MT_MODEL,
         )
         speaker = self.make_speaker(target, publish_voice)
+        guard = None
+        if speaker is not None:
+            guard = EchoGuard(target)
+            speaker.on_playing = guard.playing
         loop = TranslationLoop(
             translate=translator.translate,
             publish=publish,
@@ -299,7 +326,7 @@ class InterpreterSession:
         )
         task = asyncio.create_task(self._run_translation(loop), name="translation")
         speech = asyncio.create_task(self._run_speech(speaker), name="speech") if speaker else None
-        return _Translation(loop, task, client, speech)
+        return _Translation(loop, task, client, speech, speaker, guard)
 
     # --------------------------------------------------------------- speech
 
@@ -347,6 +374,60 @@ class InterpreterSession:
             await self._tts_session.close()
             await self._voice_source.aclose()
 
+    async def set_echo_status(self, status: str, detail: str) -> None:
+        await self._set_attributes({ATTR_ECHO: status, ATTR_ECHO_DETAIL: detail})
+
+    async def echo_check(self, identity: str) -> None:
+        """Speaks a fixed phrase and reports how many of its words the
+        learner's microphone delivered: `heardWords` is what got past the
+        browser's echo cancellation, `passedWords` what also got past the
+        echo guard (§6.4). The learner should stay quiet meanwhile."""
+        translation = self.translation
+        report: dict = {"type": "echo-report"}
+        if translation is None or translation.speaker is None or translation.guard is None:
+            report["error"] = "The check needs the translated voice, which is off."
+        elif self.checking:
+            return
+        else:
+            self.checking = True
+            try:
+                report.update(await self._run_echo_check(translation.speaker, translation.guard))
+            finally:
+                self.checking = False
+        await self._send_to(identity, ECHO_TOPIC, report)
+
+    async def _run_echo_check(self, speaker: Speaker, guard: EchoGuard) -> dict:
+        sentence, self.next_check = self.next_check, self.next_check - 1
+        before = guard.stats
+        speaker.say(sentence, CHECK_PHRASES[guard.language])
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + CHECK_TIMEOUT_S
+        while True:
+            await asyncio.sleep(0.1)
+            played = guard.last_played(sentence)
+            if played is not None and guard.clock() - played > CHECK_TAIL_S:
+                break
+            if loop.time() > deadline:
+                return {"error": "The check phrase was not spoken; is the voice working?"}
+        after = guard.stats
+        return {
+            "spokenWords": guard.spoken_words(sentence),
+            "heardWords": after.heard - before.heard,
+            "passedWords": after.passed - before.passed,
+        }
+
+    async def _send_to(self, identity: str, topic: str, message: dict) -> None:
+        # Reliable: finals and commits must arrive, and in order.
+        if not self.room.isconnected():
+            return
+        try:
+            await self.room.local_participant.publish_data(
+                encode_message(message), reliable=True, destination_identities=[identity], topic=topic
+            )
+        except PublishDataError:
+            # The learner left mid-update; there is no one to deliver to.
+            logger.debug("dropped %s message: room closed", topic)
+
     async def set_voice_status(self, status: str, detail: str) -> None:
         await self._set_attributes({ATTR_VOICE: status, ATTR_VOICE_DETAIL: detail})
 
@@ -384,6 +465,8 @@ class InterpreterSession:
                 self.tone_task.cancel()
             self.tone_task = asyncio.create_task(self.play_tone(message))
             self.spawn(self.reply(encode_tone_started(message), sender, reliable=True))
+        elif isinstance(message, EchoCheck):
+            self.spawn(self.echo_check(sender))
 
     async def reply(self, payload: bytes, identity: str, *, reliable: bool) -> None:
         await self.room.local_participant.publish_data(
@@ -407,10 +490,22 @@ class InterpreterSession:
         # One learner per room: when they leave, the session is over. Ending the
         # job promptly frees this worker slot instead of waiting for the room's
         # empty timeout.
-        if participant.kind != rtc.ParticipantKind.PARTICIPANT_KIND_AGENT:
-            self.ctx.shutdown(reason="learner left")
+        if participant.kind != rtc.ParticipantKind.PARTICIPANT_KIND_AGENT and self.ending is None:
+            self.ending = asyncio.create_task(self.end("learner left"))
+
+    async def end(self, reason: str) -> None:
+        # Release our streams and sources before the framework disconnects the
+        # room: with audio streams still open, Room.disconnect() can hang and
+        # the job is killed after its shutdown deadline (seen in about half of
+        # short sessions, before this ordering).
+        await self.close()
+        self.ctx.shutdown(reason=reason)
 
     async def close(self) -> None:
+        """Idempotent: runs from end() and again as the shutdown callback."""
+        if self.closed:
+            return
+        self.closed = True
         tasks = [*self.echoes.values(), *self.captions.values(), *self.background]
         if self.tone_task:
             tasks.append(self.tone_task)

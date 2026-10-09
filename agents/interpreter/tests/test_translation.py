@@ -197,3 +197,23 @@ def test_permanent_errors_stop_the_loop():
 
     asyncio.run(scenario())
     assert statuses[-1] == ("error", "bad key")
+
+
+def test_stopping_the_loop_cancels_the_request_in_flight():
+    cancelled = []
+
+    async def slow(req: TranslationRequest) -> TranslationResult:
+        try:
+            await asyncio.sleep(10)
+        except asyncio.CancelledError:
+            cancelled.append(req)
+            raise
+        raise AssertionError("not reached")
+
+    async def scenario():
+        loop, _, _ = make_loop(slow)
+        await drive(loop, [cap("Yesterday the team")], settle=0.1)
+        await asyncio.sleep(0.01)
+        return len(cancelled)  # before asyncio.run's own cleanup cancels stragglers
+
+    assert asyncio.run(scenario()) == 1

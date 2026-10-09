@@ -24,6 +24,8 @@ DEFAULT_LANGUAGE = "multi"
 TRANSLATION_TOPIC = "interpreter.translation"
 # Agent -> client voice metrics (one message per spoken sentence); speech.py.
 VOICE_TOPIC = "interpreter.voice"
+# Agent -> client echo-check results; echo_guard.py.
+ECHO_TOPIC = "interpreter.echo"
 
 # Language names are what the translation prompt uses, so they are spelled
 # out here rather than derived from the codes.
@@ -46,6 +48,10 @@ ATTR_TRANSLATION = "translation"  # same values as ATTR_CAPTIONS
 ATTR_TRANSLATION_DETAIL = "translation.detail"
 ATTR_VOICE = "voice"  # same values as ATTR_CAPTIONS
 ATTR_VOICE_DETAIL = "voice.detail"
+# "off" (nothing is spoken) | "clean" | "leaking" (the echo guard keeps
+# removing the agent's own voice from the learner's microphone).
+ATTR_ECHO = "echo"
+ATTR_ECHO_DETAIL = "echo.detail"
 
 TRACK_MIC = "mic"
 TRACK_PROBE = "probe"
@@ -74,7 +80,12 @@ class ToneRequest:
     duration_ms: int
 
 
-ControlMessage = Union[Ping, ToneRequest]
+@dataclass(frozen=True)
+class EchoCheck:
+    """Speak a fixed phrase and report how much of it the microphone heard."""
+
+
+ControlMessage = Union[Ping, ToneRequest, EchoCheck]
 
 
 def _finite(value: object) -> bool:
@@ -106,6 +117,8 @@ def decode_control(payload: bytes) -> ControlMessage | None:
         if _finite(duration) and duration > 0:
             return ToneRequest(duration_ms=int(min(duration, MAX_TONE_MS)))
         return None
+    if kind == "echo-check":
+        return EchoCheck()
     return None
 
 

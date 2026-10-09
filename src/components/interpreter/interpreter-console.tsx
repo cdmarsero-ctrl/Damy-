@@ -2,8 +2,8 @@
 
 import { useEffect, useRef, useState } from "react";
 import {
-  AlertCircle, AudioLines, Captions, Gauge, Headphones, Languages, PhoneOff, Power, ShieldCheck, Timer, Undo2,
-  Volume2,
+  AlertCircle, AudioLines, Captions, Ear, Gauge, Headphones, Languages, PhoneOff, Power, ShieldCheck, Timer,
+  Undo2, Volume2,
 } from "lucide-react";
 
 import { Button, Card, ErrorMessage, Pill, Progress, Select, Stat } from "@/components/ui";
@@ -20,10 +20,11 @@ import { FLUSH_TARGET_MS } from "@/lib/interpreter/translation";
 import { cn } from "@/lib/utils";
 
 /**
- * The live interpreter, Phase 4 (docs/REALTIME-TRANSLATION.md §8): the
+ * The live interpreter, Phase 5 (docs/REALTIME-TRANSLATION.md §8): the
  * learner's speech captioned, translated and spoken in the target language
- * as they talk, with the Phase 1 connection diagnostics kept below for
- * checking latency and echo cancellation on a new device.
+ * as they talk, safe with speakers on (the agent removes its own voice from
+ * the microphone; protected mode mutes the voice until headphones when echo
+ * can't be trusted), with connection and echo checks below for a new device.
  */
 
 const PHASE_LABEL: Record<SessionState["phase"], string> = {
@@ -34,6 +35,14 @@ const PHASE_LABEL: Record<SessionState["phase"], string> = {
   ended: "Session ended",
   error: "Stopped",
 };
+
+const ECHO_LABEL: Record<NonNullable<SessionState["echoStatus"]>, { text: string; tone: "success" | "danger" | "neutral" }> = {
+  off: { text: "Off", tone: "neutral" },
+  clean: { text: "Clean", tone: "success" },
+  leaking: { text: "Leaking", tone: "danger" },
+};
+
+const ECHO_CHECK_TONE = { clean: "text-success", guarded: "text-warning", leaking: "text-danger", error: "text-danger" } as const;
 
 const STATUS_LABEL: Record<NonNullable<SessionState["captionsStatus"]>, { text: string; tone: "success" | "warning" | "danger" | "neutral" }> = {
   starting: { text: "Starting", tone: "warning" },
@@ -81,6 +90,10 @@ export function InterpreterConsole({ available }: { available: boolean }) {
   }
 
   const captionsLabel = state.captionsStatus ? STATUS_LABEL[state.captionsStatus] : null;
+  // With echo cancellation off, the protected-mode banner already says so
+  // (the echo issue is always listed first).
+  const captureIssues =
+    state.capture?.issues.slice(state.protectedMode === "aec-off" && state.capture.echo === "off" ? 1 : 0) ?? [];
   const translationLabel = state.translationStatus ? STATUS_LABEL[state.translationStatus] : null;
 
   return (
@@ -91,7 +104,7 @@ export function InterpreterConsole({ available }: { available: boolean }) {
             <AudioLines className="size-5" aria-hidden />
           </span>
           <h1 className="text-2xl font-semibold tracking-tight">Live interpreter</h1>
-          <Pill tone="info">Phase 4 · spoken translation</Pill>
+          <Pill tone="info">Phase 5 · echo protection</Pill>
         </div>
         <p className="muted text-pretty">
           Speak, and your words are captioned, translated and spoken in the other language while you&apos;re
@@ -192,6 +205,26 @@ export function InterpreterConsole({ available }: { available: boolean }) {
           </p>
         )}
       </Card>
+
+      {state.protectedMode && (
+        <Card className="mb-5 border-warning/40 bg-warning/5" role="status">
+          <div className="flex flex-wrap items-start gap-3">
+            <Headphones className="size-5 text-warning shrink-0" aria-hidden />
+            <div className="flex-1 min-w-60">
+              <h2 className="font-semibold text-sm mb-1">Translated voice muted: use headphones</h2>
+              <p className="text-sm muted text-pretty">
+                {state.protectedMode === "aec-off"
+                  ? "Your browser isn't cancelling echo on this microphone, so the translated voice could be picked up and translated again."
+                  : "Your microphone keeps picking up the translated voice. The agent is removing it from your captions, but to be safe the voice is muted."}{" "}
+                Captions and the written translation carry on.
+              </p>
+            </div>
+            <Button variant="secondary" onClick={() => client.current?.confirmHeadphones()}>
+              I&apos;m wearing headphones
+            </Button>
+          </div>
+        </Card>
+      )}
 
       {/* ------------------------------------------ captions and translation */}
       <div className="grid lg:grid-cols-2 gap-5 mb-5">
@@ -332,6 +365,13 @@ export function InterpreterConsole({ available }: { available: boolean }) {
         <LatencyStat label="Audio round trip" icon={<Timer className="size-4" aria-hidden />} value={state.audioRtt} />
         <LatencyStat label="Data round trip" icon={<Gauge className="size-4" aria-hidden />} value={state.dataRtt} />
         <Stat
+          label="Echo guard"
+          icon={<Ear className="size-4" aria-hidden />}
+          value={state.echoStatus ? ECHO_LABEL[state.echoStatus].text : "—"}
+          sub={state.echoStatus === "off" ? "nothing is spoken" : "the agent's voice in your mic"}
+          tone={state.echoStatus ? ECHO_LABEL[state.echoStatus].tone : "neutral"}
+        />
+        <Stat
           label="Echo cancellation"
           icon={<ShieldCheck className="size-4" aria-hidden />}
           value={state.capture ? (state.capture.ok ? (state.capture.echo === "system" ? "System" : "On") : "Off") : "—"}
@@ -347,21 +387,20 @@ export function InterpreterConsole({ available }: { available: boolean }) {
         to its translation starting to play (target {EAR_TO_VOICE_TARGET_MS} ms median). Add about half the
         data round trip for the trip to your screen and speaker.
       </p>
-      {state.speak && live && (
+      {state.speak && live && !state.headphones && (
         <p className="text-sm text-pretty mb-5 flex gap-2">
           <Headphones className="size-4 text-brand-500 shrink-0 mt-0.5" aria-hidden />
-          Headphones are recommended for now. Echo cancellation should keep the translated voice out of your
-          microphone, but the safeguards that stop it being re-translated if it leaks through come in the
-          next phase.
+          Speakers are fine: if your microphone picks up the translated voice, the agent removes it before it
+          can be translated again. Headphones still sound best and keep the conversation private.
         </p>
       )}
 
-      {state.capture && state.capture.issues.length > 0 && (
+      {captureIssues.length > 0 && (
         <Card className="mb-5 border-warning/40 bg-warning/5">
           <div className="flex gap-3">
             <Headphones className="size-5 text-warning shrink-0" aria-hidden />
             <ul className="text-sm space-y-1.5 text-pretty">
-              {state.capture.issues.map((issue) => (
+              {captureIssues.map((issue) => (
                 <li key={issue}>{issue}</li>
               ))}
             </ul>
@@ -432,6 +471,34 @@ export function InterpreterConsole({ available }: { available: boolean }) {
                   Echo is not being cancelled on this device. Use headphones for the interpreter.
                 </span>
               )}
+            </p>
+          )}
+        </Card>
+
+        <Card className="lg:col-span-2">
+          <h3 className="font-semibold mb-1">Check echo with speech</h3>
+          <p className="text-sm muted mb-4 text-pretty">
+            With the setup you&apos;ll really use (speakers or headphones), stay quiet for about six seconds. The
+            agent says a short phrase in {targetLabel} through the translated voice and counts how much of it
+            your microphone hears, and whether any of it got past the agent&apos;s echo guard into the captions.
+          </p>
+          <Button
+            variant="secondary"
+            onClick={() => void client.current?.runEchoCheck()}
+            disabled={!live || state.busy !== null || state.voiceStatus !== "live"}
+            loading={state.busy === "echo-check"}
+          >
+            Run speech check
+          </Button>
+          {live && state.voiceStatus !== "live" && state.busy === null && (
+            <p className="text-sm muted mt-4">Needs the translated voice, which isn&apos;t on.</p>
+          )}
+          {state.busy === "echo-check" && (
+            <p className="text-sm muted mt-4" aria-live="polite">Listening — please stay quiet…</p>
+          )}
+          {state.echoCheck && (
+            <p className={cn("text-sm mt-4 text-pretty", ECHO_CHECK_TONE[state.echoCheck.verdict])} aria-live="polite">
+              {state.echoCheck.message}
             </p>
           )}
         </Card>

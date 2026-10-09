@@ -9,6 +9,7 @@ import protocol  # noqa: E402
 from protocol import (  # noqa: E402
     CAPTION_LANGUAGES,
     MAX_TONE_MS,
+    EchoCheck,
     Ping,
     ToneRequest,
     decode_control,
@@ -30,6 +31,7 @@ def test_names_match_the_typescript_side():
     assert f'CAPTIONS_TOPIC = "{protocol.CAPTIONS_TOPIC}"' in ts
     assert f'TRANSLATION_TOPIC = "{protocol.TRANSLATION_TOPIC}"' in ts
     assert f'VOICE_TOPIC = "{protocol.VOICE_TOPIC}"' in ts
+    assert f'ECHO_TOPIC = "{protocol.ECHO_TOPIC}"' in ts
     for attr in (
         protocol.ATTR_CAPTIONS,
         protocol.ATTR_CAPTIONS_DETAIL,
@@ -37,6 +39,8 @@ def test_names_match_the_typescript_side():
         protocol.ATTR_TRANSLATION_DETAIL,
         protocol.ATTR_VOICE,
         protocol.ATTR_VOICE_DETAIL,
+        protocol.ATTR_ECHO,
+        protocol.ATTR_ECHO_DETAIL,
     ):
         assert f'"{attr}"' in ts
 
@@ -87,6 +91,10 @@ def test_ping_round_trip_echoes_client_timestamp():
 def test_tone_request_is_capped():
     assert decode_control(b'{"type":"tone","durationMs":1500}') == ToneRequest(1500)
     assert decode_control(b'{"type":"tone","durationMs":1e9}') == ToneRequest(MAX_TONE_MS)
+
+
+def test_echo_check_request():
+    assert decode_control(b'{"type":"echo-check"}') == EchoCheck()
 
 
 def test_malformed_messages_are_ignored_not_raised():
