@@ -224,6 +224,7 @@ model User {
   studySessions    StudySession[]
   reports          FeedbackReport[]
   syncMutations    SyncMutation[]
+  interpreterSessions InterpreterSession[]
 
   @@index([createdAt])
 }
@@ -924,4 +925,49 @@ model SyncMutation {
 
   @@unique([userId, idempotencyKey])
   @@index([userId, appliedAt])
+}
+
+/// One live-interpreter session (docs/REALTIME-TRANSLATION.md, Phase 6).
+/// Created when the token is minted, completed by the agent's end-of-session
+/// report. Holds usage and latency figures only: no audio and no transcript
+/// text is ever stored.
+model InterpreterSession {
+  id             String    @id @default(cuid())
+  userId         String
+  user           User      @relation(fields: [userId], onDelete: Cascade, references: [id])
+  /// The LiveKit room; the agent reports against it.
+  room           String    @unique
+  sourceLanguage String
+  targetLanguage String
+  startedAt      DateTime  @default(now())
+  /// The longest the session may run (the learner's remaining daily quota,
+  /// capped); signed into the token and enforced by the agent.
+  maxSeconds     Int
+  endedAt        DateTime?
+  /// Seconds the agent was in the room; null until it reports.
+  durationSeconds Int?
+  endReason      String?
+
+  // Metering, in each vendor's billing units.
+  asrSeconds         Float?
+  mtRequests         Int?
+  mtInputTokens      Int?
+  mtOutputTokens     Int?
+  mtCacheReadTokens  Int?
+  mtCacheWriteTokens Int?
+  ttsCharacters      Int?
+
+  // Quality: medians and 95th percentiles over the session.
+  sentences        Int?
+  captionP50Ms     Float?
+  captionP95Ms     Float?
+  translationP50Ms Float?
+  translationP95Ms Float?
+  voiceP50Ms       Float?
+  voiceP95Ms       Float?
+  /// Words of the agent's own voice the echo guard removed.
+  echoRemovedWords Int?
+
+  @@index([userId, startedAt])
+  @@index([startedAt])
 }

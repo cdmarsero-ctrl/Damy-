@@ -38,6 +38,9 @@ def listen_url(base: str, language: str, *, sample_rate: int = SAMPLE_RATE) -> s
         # that keeps endpointing from firing.
         "utterance_end_ms": 1000,
         "vad_events": "true",
+        # Privacy (Phase 6): keep this audio out of Deepgram's Model
+        # Improvement Program. Deepgram doesn't store audio otherwise.
+        "mip_opt_out": "true",
     }
     return f"{base}?{urlencode(params)}"
 

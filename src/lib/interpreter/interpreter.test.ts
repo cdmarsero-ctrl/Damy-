@@ -150,7 +150,7 @@ describe("LiveKit session", () => {
   });
 
   it("mints a single-room token that dispatches the agent", async () => {
-    const session = await createInterpreterSession(liveKitConfig(env)!, { id: "u1", name: "Ada" }, { sourceLanguage: "es", targetLanguage: "en" });
+    const session = await createInterpreterSession(liveKitConfig(env)!, { id: "u1", name: "Ada" }, { sourceLanguage: "es", targetLanguage: "en", maxSeconds: 900 });
     expect(session.url).toBe(env.LIVEKIT_URL);
     expect(session.identity).toBe("user_u1");
     expect(session.room).toMatch(/^interp_u1_[0-9a-f]{8}$/);
@@ -163,13 +163,13 @@ describe("LiveKit session", () => {
     expect(claims.video.canUpdateOwnMetadata).toBeFalsy();
     expect(claims.roomConfig.agents[0].agentName).toBe("interpreter");
     expect(claims.exp - claims.nbf).toBeLessThanOrEqual(600);
-    // The agent reads the caption language from here.
-    expect(JSON.parse(claims.metadata)).toEqual({ sourceLanguage: "es", targetLanguage: "en" });
+    // The agent reads the languages and the time limit from here.
+    expect(JSON.parse(claims.metadata)).toEqual({ sourceLanguage: "es", targetLanguage: "en", maxSeconds: 900 });
   });
 
   it("uses a fresh room for every session", async () => {
     const config = liveKitConfig(env)!;
-    const opts = { sourceLanguage: "multi", targetLanguage: "es" } as const;
+    const opts = { sourceLanguage: "multi", targetLanguage: "es", maxSeconds: 60 } as const;
     const a = await createInterpreterSession(config, { id: "u1", name: "Ada" }, opts);
     const b = await createInterpreterSession(config, { id: "u1", name: "Ada" }, opts);
     expect(a.room).not.toBe(b.room);

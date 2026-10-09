@@ -26,6 +26,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 
 from policy import CHAR_SCRIPT
+from telemetry import tracer
 from tts import SAMPLE_RATE, TtsAudio, TtsConnectError, TtsDone, TtsError, generation_request, parse_tts
 
 logger = logging.getLogger("interpreter.speech")
@@ -133,6 +134,7 @@ class _SentenceState:
     speech_started: float | None = None
     first_audio_reported: bool = False
     text: str = ""  # everything queued for TTS, as it will be spoken
+    queued_ns: int | None = None  # wall clock of the first piece, for the TTS span
 
 
 @dataclass
@@ -157,6 +159,8 @@ class Speaker:
     _contexts: dict[str, int] = field(default_factory=dict)
     _wake: asyncio.Event = field(default_factory=asyncio.Event)
     _status: tuple[str, str] | None = None
+    # Metering (Phase 6): characters sent for synthesis, the TTS billing unit.
+    characters_sent: int = 0
 
     def on_commit(self, sentence: int, delta: str, final: bool, speech_started: float | None) -> None:
         """Called by the translation loop, in order, for every commit."""
@@ -168,6 +172,8 @@ class Speaker:
             state.ended = True
             return
         self._queue.put_nowait((sentence, delta, final))
+        if state.queued_ns is None:
+            state.queued_ns = time.time_ns()
         state.text += piece_text(delta, first=state.pieces_queued == 0, language=self.language)
         state.pieces_queued += 1
         if final:
@@ -232,10 +238,12 @@ class Speaker:
             self._playout.open(sentence)
             self._contexts[context_id] = sentence
             self._speed = speed_for_backlog(self._playout.backlog_seconds(), self._speed)
+            transcript = piece_text(delta, first=state.pieces_sent == 0, language=self.language)
+            self.characters_sent += len(transcript)
             await stream.send(
                 generation_request(
                     context_id=context_id,
-                    transcript=piece_text(delta, first=state.pieces_sent == 0, language=self.language),
+                    transcript=transcript,
                     more=not final,
                     voice_id=self.voice_id,
                     model=self.model,
@@ -287,6 +295,10 @@ class Speaker:
             state = self._sentences.get(sentence)
             if state and not state.first_audio_reported and sentence >= 0:
                 state.first_audio_reported = True
+                # From the sentence's first text to its first audio playing.
+                tracer.start_span(
+                    "interpreter.tts.sentence", start_time=state.queued_ns, attributes={"sentence": sentence}
+                ).end()
                 message: dict = {"type": "voice", "sentence": sentence}
                 if state.speech_started is not None:
                     # From the source speech reaching the agent to the first

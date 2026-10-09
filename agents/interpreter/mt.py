@@ -17,15 +17,20 @@ from __future__ import annotations
 
 import logging
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 import anthropic
+
+from telemetry import tracer
 
 logger = logging.getLogger("interpreter.mt")
 
 DEFAULT_MODEL = "claude-haiku-5-5"
 # A continuation is a handful of words; a final flush is at most a sentence.
 MAX_TOKENS = 400
+# How long a failed-over translator stays on the fallback model.
+FAILOVER_COOLDOWN_S = 60.0
 
 AUTO = "multi"
 
@@ -162,9 +167,18 @@ class ClaudeTranslator:
         source_label: str,
         target_label: str,
         model: str = DEFAULT_MODEL,
+        fallback_model: str | None = None,
+        clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self._client = client
         self._model = model
+        # Provider failover (§8, Phase 6): when the primary model fails with a
+        # transient error (overload, 5xx, timeout, rate limit), the request is
+        # retried at once on the fallback, which then stays in use for
+        # FAILOVER_COOLDOWN_S before the primary is tried again.
+        self._fallback = fallback_model if fallback_model and fallback_model != model else None
+        self._clock = clock
+        self._primary_down_until = 0.0
         self._system = [
             {
                 "type": "text",
@@ -173,25 +187,57 @@ class ClaudeTranslator:
             }
         ]
 
-    def _speed_params(self) -> dict:
+    @staticmethod
+    def _speed_params(model: str) -> dict:
         # Haiku 5.5 accepts thinking off at its default effort: the lowest
         # latency. Larger current models reject "disabled", so they run at low
         # effort instead.
-        if self._model.startswith("claude-haiku"):
+        if model.startswith("claude-haiku"):
             return {"thinking": {"type": "disabled"}}
         return {"output_config": {"effort": "low"}}
 
+    @property
+    def model(self) -> str:
+        """The model requests go to right now."""
+        if self._fallback and self._clock() < self._primary_down_until:
+            return self._fallback
+        return self._model
+
     async def translate(self, req: TranslationRequest) -> TranslationResult:
+        model = self.model
+        try:
+            return await self._translate(req, model)
+        except TranslationError as err:
+            if err.permanent or self._fallback is None or model == self._fallback:
+                raise
+            logger.warning("translation model %s failed (%s); failing over to %s", model, err, self._fallback)
+            self._primary_down_until = self._clock() + FAILOVER_COOLDOWN_S
+            return await self._translate(req, self._fallback)
+
+    async def _translate(self, req: TranslationRequest, model: str) -> TranslationResult:
+        with tracer.start_as_current_span("interpreter.mt") as span:
+            span.set_attributes({"model": model, "final": req.final, "force": req.force})
+            result = await self._request(req, model)
+            span.set_attributes(
+                {
+                    "ttft_ms": result.ttft_ms if result.ttft_ms is not None else -1.0,
+                    "total_ms": result.total_ms,
+                    **{f"tokens.{k}": v for k, v in result.usage.items()},
+                }
+            )
+            return result
+
+    async def _request(self, req: TranslationRequest, model: str) -> TranslationResult:
         started = time.monotonic()
         ttft: float | None = None
         parts: list[str] = []
         try:
             async with self._client.messages.stream(
-                model=self._model,
+                model=model,
                 max_tokens=MAX_TOKENS,
                 system=self._system,
                 messages=[{"role": "user", "content": build_user(req)}],
-                **self._speed_params(),
+                **self._speed_params(model),
             ) as stream:
                 async for text in stream.text_stream:
                     if ttft is None:
@@ -203,7 +249,7 @@ class ClaudeTranslator:
         except anthropic.PermissionDeniedError as err:
             raise TranslationError("The agent's API key can't use the translation model.", permanent=True) from err
         except anthropic.NotFoundError as err:
-            raise TranslationError(f"Unknown translation model {self._model!r}.", permanent=True) from err
+            raise TranslationError(f"Unknown translation model {model!r}.", permanent=True) from err
         except anthropic.RateLimitError as err:
             raise TranslationError("Translation is being rate-limited; retrying.") from err
         except (anthropic.APIConnectionError, anthropic.APIStatusError) as err:

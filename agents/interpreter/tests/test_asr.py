@@ -100,3 +100,75 @@ def test_unreachable_server_is_a_retryable_error():
             return err.value
 
     assert asyncio.run(scenario()).auth is False
+
+
+def test_listen_url_opts_out_of_model_improvement():
+    q = parse_qs(urlparse(listen_url("wss://x/v1/listen", "en")).query)
+    assert q["mip_opt_out"] == ["true"]
+
+
+def test_replay_buffer_keeps_only_unfinalised_audio():
+    from captions import ReplayBuffer
+
+    buf: ReplayBuffer[str] = ReplayBuffer(sample_rate=10, max_seconds=3)
+    for name in "abcde":  # five 1 s chunks; only the last 3 s are kept
+        buf.sent(name, 10)
+    buf.finalized(3.0)  # finals cover up to the end of "c"
+    assert buf.take() == ["d", "e"]
+    assert buf.take() == []
+    buf.sent("f", 10)  # offsets restart on the new connection
+    buf.finalized(0.5)  # partway into "f": not covered yet
+    assert buf.take() == ["f"]
+
+
+def test_a_dropped_connection_replays_the_unfinalised_audio():
+    """The first connection dies after 1 s of an utterance, before any final:
+    the captioner reconnects and sends that second again, then the rest, so no
+    words are lost and the captions carry on."""
+    from captioner import Captioner, Chunk
+
+    async def scenario():
+        app = fake_deepgram.make_app(drop_after_ms=1000)
+        runner = web.AppRunner(app)
+        await runner.setup()
+        site = web.TCPSite(runner, "127.0.0.1", 0)
+        await site.start()
+        base = f"ws://127.0.0.1:{site._server.sockets[0].getsockname()[1]}/v1/listen"
+        published, statuses = [], []
+
+        async def publish(message):
+            published.append(message)
+
+        async def set_status(status, detail):
+            statuses.append(status)
+
+        captioner = Captioner(
+            vad=None, api_key=fake_deepgram.API_KEY, base_url=base, language="en",
+            publish=publish, set_status=set_status,
+        )
+        captioner._gate.open = True  # mid-utterance, as the VAD would have it
+        loop = asyncio.get_running_loop()
+        frame = b"\x00\x00" * 320  # 20 ms
+        try:
+            async with aiohttp.ClientSession() as session:
+                task = asyncio.create_task(captioner._asr_loop(session))
+                for _ in range(100):  # 2 s, in real time
+                    captioner._enqueue(Chunk(frame, 320, loop.time()))
+                    await asyncio.sleep(0.02)
+                await asyncio.sleep(1.5)  # the 0.5 s reconnect backoff, then catch-up
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+        finally:
+            await runner.cleanup()
+        return app[fake_deepgram.RECEIVED], published, statuses, captioner.audio_seconds
+
+    received, published, statuses, audio_seconds = asyncio.run(scenario())
+    second = 16_000 * 2
+    assert len(received) == 2
+    assert received[0] >= second  # cut after 1 s
+    # The second connection got the lost second again, then everything after it.
+    assert received[1] >= 2 * second - 640
+    assert statuses.count("live") == 2
+    texts = [m["text"] for m in published if m.get("type") == "caption"]
+    assert any(t.startswith("word1") for t in texts[-3:])  # recognition carried on
+    assert audio_seconds >= 3.0 - 0.05  # the replay is billed too

@@ -18,7 +18,7 @@ import bisect
 import json
 from collections import deque
 from dataclasses import dataclass
-from typing import Union
+from typing import Generic, TypeVar, Union
 
 
 @dataclass(frozen=True)
@@ -34,6 +34,9 @@ class AsrResult:
     is_final: bool
     speech_final: bool
     words: tuple[AsrWord, ...]
+    # Stream offset (s) where the audio this result covers ends (start +
+    # duration); on a final, nothing before it will be revised again.
+    end: float | None = None
 
     @property
     def audio_end(self) -> float | None:
@@ -83,11 +86,18 @@ def parse_deepgram(raw: str | bytes) -> AsrEvent | None:
         for w in alt.get("words") or []
         if isinstance(w, dict) and isinstance(w.get("start"), (int, float)) and isinstance(w.get("end"), (int, float))
     )
+    start, duration = msg.get("start"), msg.get("duration")
+    end = (
+        float(start) + float(duration)
+        if isinstance(start, (int, float)) and isinstance(duration, (int, float))
+        else None
+    )
     return AsrResult(
         transcript=str(alt.get("transcript") or "").strip(),
         is_final=bool(msg.get("is_final")),
         speech_final=bool(msg.get("speech_final")),
         words=words,
+        end=end,
     )
 
 
@@ -188,3 +198,44 @@ class CaptionTracker:
         self.segment += 1
         self._segment_open = False
         return message
+
+
+T = TypeVar("T")
+
+
+class ReplayBuffer(Generic[T]):
+    """Audio sent on the current ASR connection that no final result covers
+    yet (Phase 6). If the connection drops, that audio's recognition is lost
+    with it; replaying it on the new connection recovers the words instead of
+    leaving a gap mid-sentence. Bounded, so a long outage replays only the
+    most recent audio."""
+
+    def __init__(self, sample_rate: int, max_seconds: float = 10.0) -> None:
+        self.sample_rate = sample_rate
+        self._max = int(max_seconds * sample_rate)
+        self._chunks: deque[tuple[int, int, T]] = deque()  # (end sample, samples, chunk)
+        self._sent = 0
+        self._held = 0
+
+    def sent(self, chunk: T, samples: int) -> None:
+        self._sent += samples
+        self._held += samples
+        self._chunks.append((self._sent, samples, chunk))
+        while self._held > self._max and self._chunks:
+            _, dropped, _ = self._chunks.popleft()
+            self._held -= dropped
+
+    def finalized(self, end_s: float) -> None:
+        """A final result covers the stream up to `end_s`."""
+        end = int(round(end_s * self.sample_rate))
+        while self._chunks and self._chunks[0][0] <= end:
+            _, samples, _ = self._chunks.popleft()
+            self._held -= samples
+
+    def take(self) -> list[T]:
+        """The chunks to replay on a new connection, whose offsets restart at 0."""
+        chunks = [chunk for _, _, chunk in self._chunks]
+        self._chunks.clear()
+        self._sent = 0
+        self._held = 0
+        return chunks

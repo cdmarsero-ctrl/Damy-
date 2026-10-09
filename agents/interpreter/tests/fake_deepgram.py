@@ -27,6 +27,10 @@ FINAL_MS = 1500
 DELAY = web.AppKey("delay_s", float)
 CONNECTIONS = web.AppKey("connections", list)
 CONTROLS = web.AppKey("controls", list)
+# Audio bytes received per connection, and an optional drop: the first
+# connection is cut after this many ms of audio (a network failure).
+RECEIVED = web.AppKey("received", list)
+DROP_AFTER = web.AppKey("drop_after_s", float)
 REQUIRED = ("model", "language", "encoding", "sample_rate", "interim_results")
 
 
@@ -65,6 +69,9 @@ async def listen(request: web.Request) -> web.StreamResponse:
     ws = web.WebSocketResponse()
     await ws.prepare(request)
     request.app[CONNECTIONS].append(dict(query))
+    index = len(request.app[RECEIVED])
+    request.app[RECEIVED].append(0)
+    drop_after = request.app[DROP_AFTER] if index == 0 else 0.0
     delay = request.app[DELAY]
     loop = asyncio.get_running_loop()
     outbox: asyncio.Queue[tuple[float, str]] = asyncio.Queue()
@@ -93,6 +100,10 @@ async def listen(request: web.Request) -> web.StreamResponse:
     async for msg in ws:
         if msg.type == WSMsgType.BINARY:
             received += len(msg.data)
+            request.app[RECEIVED][index] = received
+            if drop_after and seconds() >= drop_after:
+                await ws.close(code=1011)  # "internal error", as an outage looks
+                break
             now = seconds()
             while now - (segment[-1][2] if segment else seg_start) >= WORD_MS / 1000:
                 counter += 1
@@ -119,9 +130,11 @@ async def listen(request: web.Request) -> web.StreamResponse:
     return ws
 
 
-def make_app(delay_ms: float = 0) -> web.Application:
+def make_app(delay_ms: float = 0, drop_after_ms: float = 0) -> web.Application:
     app = web.Application()
     app[DELAY] = delay_ms / 1000
+    app[RECEIVED] = []
+    app[DROP_AFTER] = drop_after_ms / 1000
     app[CONNECTIONS] = []
     app[CONTROLS] = []
     app.router.add_get("/v1/listen", listen)

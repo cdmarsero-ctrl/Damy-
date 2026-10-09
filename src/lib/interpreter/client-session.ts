@@ -105,6 +105,10 @@ export interface SessionState {
   headphones: boolean;
   /** Result of the last spoken echo check. */
   echoCheck: EchoAssessment | null;
+  /** Date.now() at which the agent ends the session (the daily quota). */
+  endsAt: number | null;
+  /** Why the session ended, when it ended normally rather than failed. */
+  notice: string | null;
 }
 
 const AGENT_JOIN_TIMEOUT_MS = 15_000;
@@ -156,6 +160,8 @@ export const INITIAL_STATE: SessionState = {
   protectedMode: null,
   headphones: false,
   echoCheck: null,
+  endsAt: null,
+  notice: null,
 };
 
 const CAPTIONS_STATUSES: readonly string[] = ["starting", "live", "unavailable", "error"];
@@ -178,6 +184,7 @@ export class InterpreterClient {
   private nextPingId = 1;
   private stopped = false;
   private echoReport: ((report: EchoReport) => void) | null = null;
+  private endingReason: string | null = null;
 
   constructor(private readonly onChange: (state: SessionState) => void) {}
 
@@ -195,11 +202,12 @@ export class InterpreterClient {
       await this.ctx.resume();
 
       await this.captureMic();
-      const session = await api.post<{ url: string; token: string }>("/api/interpreter/session", {
-        sourceLanguage,
-        targetLanguage,
-      });
+      const session = await api.post<{ url: string; token: string; room: string; maxSeconds: number }>(
+        "/api/interpreter/session",
+        { sourceLanguage, targetLanguage },
+      );
       if (this.stopped) return;
+      this.set({ endsAt: Date.now() + session.maxSeconds * 1000 });
 
       const room = new Room({ adaptiveStream: false, dynacast: false, webAudioMix: false });
       this.room = room;
@@ -211,7 +219,9 @@ export class InterpreterClient {
           if (p instanceof RemoteParticipant && p.isAgent) this.readAgentAttributes(p);
         })
         .on(RoomEvent.ParticipantDisconnected, (p) => {
-          if (p.isAgent) this.fail("The interpreter agent left the session.");
+          if (!p.isAgent) return;
+          if (this.endingReason) void this.endNormally(this.endingReason);
+          else this.fail("The interpreter agent left the session.");
         })
         .on(RoomEvent.Disconnected, () => {
           if (!this.stopped) this.fail("Disconnected from the media server.");
@@ -229,7 +239,13 @@ export class InterpreterClient {
       await this.publishProbe();
 
       this.set({ phase: "waiting-agent" });
-      await this.waitForAgent();
+      try {
+        await this.waitForAgent();
+      } catch (err) {
+        // Nothing was used: give the minutes back.
+        void api.post("/api/interpreter/session/release", { room: session.room }).catch(() => undefined);
+        throw err;
+      }
       if (this.stopped) return;
 
       this.set({ phase: "live" });
@@ -410,6 +426,10 @@ export class InterpreterClient {
     }
     if (topic !== CONTROL_TOPIC) return;
     const msg = decodeControl(payload);
+    if (msg?.type === "ending") {
+      this.endingReason = msg.reason;
+      return;
+    }
     if (msg?.type !== "pong") return;
     const sentAt = this.pings.get(msg.id);
     if (sentAt === undefined) return;
@@ -584,14 +604,30 @@ export class InterpreterClient {
 
   private fail(message: string) {
     if (this.stopped) return;
-    this.set({ phase: "error", error: message, busy: null });
+    this.set({ phase: "error", error: message, busy: null, endsAt: null, speaking: false });
     void this.teardown();
   }
 
   async stop() {
     if (this.stopped) return;
     await this.teardown();
-    this.set({ phase: "ended", busy: null });
+    this.set({ phase: "ended", busy: null, endsAt: null, speaking: false });
+  }
+
+  /** The agent ended the session on purpose (e.g. the time limit). */
+  private async endNormally(reason: string) {
+    if (this.stopped) return;
+    await this.teardown();
+    this.set({
+      phase: "ended",
+      busy: null,
+      endsAt: null,
+      speaking: false,
+      notice:
+        reason === "time-limit"
+          ? "The session reached its time limit (today's remaining interpreter minutes)."
+          : "The interpreter ended the session.",
+    });
   }
 
   private async teardown() {

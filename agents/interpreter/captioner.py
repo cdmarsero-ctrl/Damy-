@@ -13,7 +13,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 
 import aiohttp
@@ -21,7 +21,7 @@ from livekit import rtc
 from livekit.agents import vad as agents_vad
 
 from asr import SAMPLE_RATE, DeepgramError, DeepgramStream, listen_url
-from captions import ArrivalClock, AsrResult, CaptionTracker, UtteranceEnd, parse_deepgram
+from captions import ArrivalClock, AsrResult, CaptionTracker, ReplayBuffer, UtteranceEnd, parse_deepgram
 from echo_guard import EchoGuard
 from gate import SpeechGate
 
@@ -38,6 +38,8 @@ MAX_QUEUED_S = 5.0
 # Bounded inbound queue, for the same reason as the echo path in main.py.
 STREAM_CAPACITY_FRAMES = 25
 RECONNECT_DELAYS_S = (0.5, 1, 2, 4, 8)
+# Unfinalised audio replayed after a reconnect (Phase 6), at most this much.
+MAX_REPLAY_S = 10.0
 STABLE_STREAM_S = 10.0
 
 Publish = Callable[[dict], Awaitable[None]]
@@ -76,6 +78,9 @@ class Captioner:
         self._queue: asyncio.Queue[Chunk | object] = asyncio.Queue()
         self._max_queued = int(MAX_QUEUED_S * 1000 / FRAME_MS)
         self._clock = ArrivalClock(SAMPLE_RATE)
+        self._replay: ReplayBuffer[Chunk] = ReplayBuffer(SAMPLE_RATE, MAX_REPLAY_S)
+        # Metering: seconds of audio sent for recognition (the billing unit).
+        self.audio_seconds = 0.0
         self._tracker = CaptionTracker()
         self._guard = echo_guard
         self._set_echo_status = set_echo_status
@@ -154,8 +159,11 @@ class Captioner:
 
             connected_at = time.monotonic()
             self._clock.reset()
+            replay = self._replay.take()
+            if replay:
+                logger.info("replaying %.1f s of unfinalised audio", sum(c.samples for c in replay) / SAMPLE_RATE)
             await self._set_status("live", "")
-            sender = asyncio.create_task(self._send(stream), name="captions-send")
+            sender = asyncio.create_task(self._send(stream, replay), name="captions-send")
             try:
                 async for raw in stream.messages():
                     await self._on_message(raw)
@@ -178,7 +186,13 @@ class Captioner:
                 await asyncio.sleep(RECONNECT_DELAYS_S[min(failures, len(RECONNECT_DELAYS_S) - 1)])
                 failures += 1
 
-    async def _send(self, stream: DeepgramStream) -> None:
+    async def _send(self, stream: DeepgramStream, replay: Sequence[Chunk] = ()) -> None:
+        for chunk in replay:
+            await self._send_chunk(stream, chunk)
+        if replay and not self._gate.open:
+            # The utterance ended while we were reconnecting: its Finalize
+            # went down with the old connection.
+            await stream.finalize()
         while True:
             try:
                 item = await asyncio.wait_for(self._queue.get(), timeout=KEEPALIVE_S)
@@ -189,12 +203,23 @@ class Captioner:
                 await stream.finalize()
             else:
                 assert isinstance(item, Chunk)
-                self._clock.record(item.samples, item.arrived_at)
-                await stream.send_audio(item.pcm)
+                await self._send_chunk(stream, item)
+
+    async def _send_chunk(self, stream: DeepgramStream, chunk: Chunk) -> None:
+        # Arrival time, not send time: replayed audio keeps its original
+        # arrival, so caption latency stays honest after a reconnect.
+        self._clock.record(chunk.samples, chunk.arrived_at)
+        await stream.send_audio(chunk.pcm)
+        self._replay.sent(chunk, chunk.samples)
+        self.audio_seconds += chunk.samples / SAMPLE_RATE
 
     async def _on_message(self, raw: str) -> None:
         event = parse_deepgram(raw)
         if isinstance(event, AsrResult):
+            if event.is_final:
+                end = event.end if event.end is not None else event.audio_end
+                if end is not None:
+                    self._replay.finalized(end)
             if self._guard is not None:
                 arrivals = [self._clock.arrival_of(w.end) for w in event.words]
                 event = self._guard.filter(event, arrivals)

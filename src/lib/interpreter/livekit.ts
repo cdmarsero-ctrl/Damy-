@@ -52,16 +52,22 @@ export function liveKitConfig(env: {
 export interface SessionOptions {
   sourceLanguage: CaptionLanguage;
   targetLanguage: TranslationLanguage;
+  /** The agent ends the session after this long (the learner's quota). */
+  maxSeconds: number;
+}
+
+/** One fresh room per session: a stale agent or ghost participant from an
+ *  earlier tab can never end up in the new call. */
+export function newRoomName(userId: string): string {
+  return `interp_${userId}_${randomUUID().slice(0, 8)}`;
 }
 
 export async function createInterpreterSession(
   config: LiveKitConfig,
   user: { id: string; name: string },
   options: SessionOptions,
+  room: string = newRoomName(user.id),
 ): Promise<InterpreterSession> {
-  // One fresh room per session: a stale agent or ghost participant from an
-  // earlier tab can never end up in the new call.
-  const room = `interp_${user.id}_${randomUUID().slice(0, 8)}`;
   const identity = `user_${user.id}`;
 
   const token = new AccessToken(config.apiKey, config.apiSecret, {

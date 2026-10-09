@@ -7,6 +7,7 @@ import {
 } from "lucide-react";
 
 import { Button, Card, ErrorMessage, Pill, Progress, Select, Stat } from "@/components/ui";
+import { api } from "@/lib/client";
 import { CAPTION_TARGET_MS, captionLines } from "@/lib/interpreter/captions";
 import { INITIAL_STATE, InterpreterClient, type SessionState } from "@/lib/interpreter/client-session";
 import { EAR_TO_VOICE_TARGET_MS, LOOPBACK_TARGET_MS, type LatencySummary } from "@/lib/interpreter/measure";
@@ -62,6 +63,31 @@ export function InterpreterConsole({ available }: { available: boolean }) {
   // Leaving the page must release the mic and the room.
   useEffect(() => () => void client.current?.stop(), []);
 
+  // Today's minutes: on load, and again whenever a session ends.
+  const [usage, setUsage] = useState<Usage | null>(null);
+  const settled = state.phase === "idle" || state.phase === "ended" || state.phase === "error";
+  useEffect(() => {
+    if (!available || !settled) return;
+    let cancelled = false;
+    api
+      .get<Usage>("/api/interpreter/usage")
+      .then((u) => !cancelled && setUsage(u))
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [available, settled]);
+
+  // A once-a-second tick for the session countdown.
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (state.endsAt === null) return;
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, [state.endsAt]);
+  const secondsLeft = state.endsAt === null ? null : Math.max(0, Math.round((state.endsAt - now) / 1000));
+  const outOfMinutes = usage !== null && usage.remainingSeconds < 30;
+
   const lines = captionLines(state.captions);
   const lastLine = lines.at(-1);
   // Follow the newest caption, the way a live transcript should. Scrolls the
@@ -89,12 +115,13 @@ export function InterpreterConsole({ available }: { available: boolean }) {
     void client.current.start(language, target);
   }
 
-  const captionsLabel = state.captionsStatus ? STATUS_LABEL[state.captionsStatus] : null;
+  // Agent statuses describe a running session; once it's over they'd be stale.
+  const captionsLabel = active && state.captionsStatus ? STATUS_LABEL[state.captionsStatus] : null;
   // With echo cancellation off, the protected-mode banner already says so
   // (the echo issue is always listed first).
   const captureIssues =
     state.capture?.issues.slice(state.protectedMode === "aec-off" && state.capture.echo === "off" ? 1 : 0) ?? [];
-  const translationLabel = state.translationStatus ? STATUS_LABEL[state.translationStatus] : null;
+  const translationLabel = active && state.translationStatus ? STATUS_LABEL[state.translationStatus] : null;
 
   return (
     <div className="max-w-4xl mx-auto px-4 sm:px-6 py-8">
@@ -104,7 +131,7 @@ export function InterpreterConsole({ available }: { available: boolean }) {
             <AudioLines className="size-5" aria-hidden />
           </span>
           <h1 className="text-2xl font-semibold tracking-tight">Live interpreter</h1>
-          <Pill tone="info">Phase 5 · echo protection</Pill>
+          <Pill tone="info">Phase 6 · production readiness</Pill>
         </div>
         <p className="muted text-pretty">
           Speak, and your words are captioned, translated and spoken in the other language while you&apos;re
@@ -133,6 +160,11 @@ export function InterpreterConsole({ available }: { available: boolean }) {
         <div className="mb-4">
           <ErrorMessage>{state.error}</ErrorMessage>
         </div>
+      )}
+      {state.notice && !state.error && (
+        <p className="mb-4 text-sm text-pretty" role="status">
+          {state.notice}
+        </p>
       )}
 
       {/* ------------------------------------------------------- session bar */}
@@ -185,6 +217,11 @@ export function InterpreterConsole({ available }: { available: boolean }) {
               <span className="font-medium" aria-live="polite">
                 {PHASE_LABEL[state.phase]}
               </span>
+              {live && secondsLeft !== null && (
+                <span className="text-sm muted tabular-nums" title="The session ends here (today's minutes)">
+                  {formatClock(secondsLeft)} left
+                </span>
+              )}
             </div>
           </div>
           {active ? (
@@ -193,7 +230,7 @@ export function InterpreterConsole({ available }: { available: boolean }) {
               End session
             </Button>
           ) : (
-            <Button onClick={start} disabled={!available || sameLanguage}>
+            <Button onClick={start} disabled={!available || sameLanguage || outOfMinutes}>
               <Power className="size-4" aria-hidden />
               {state.phase === "idle" ? "Start" : "Start again"}
             </Button>
@@ -202,6 +239,13 @@ export function InterpreterConsole({ available }: { available: boolean }) {
         {sameLanguage && (
           <p id="same-language" className="text-sm text-warning mt-3">
             Pick a translation language different from the one you&apos;ll speak.
+          </p>
+        )}
+        {usage && !active && (
+          <p className={cn("text-sm mt-3", outOfMinutes ? "text-warning" : "muted")}>
+            {outOfMinutes
+              ? "You've used today's interpreter minutes. They reset at midnight UTC."
+              : `${Math.floor(usage.remainingSeconds / 60)} of ${Math.round(usage.dailySeconds / 60)} interpreter minutes left today; the next session can last ${formatMinutes(Math.min(usage.maxSessionSeconds, usage.remainingSeconds))}.`}
           </p>
         )}
       </Card>
@@ -528,6 +572,23 @@ export function InterpreterConsole({ available }: { available: boolean }) {
       </div>
     </div>
   );
+}
+
+interface Usage {
+  dailySeconds: number;
+  usedSeconds: number;
+  remainingSeconds: number;
+  maxSessionSeconds: number;
+}
+
+function formatMinutes(seconds: number): string {
+  if (seconds < 60) return `${Math.floor(seconds)} seconds`;
+  const minutes = Math.floor(seconds / 60);
+  return `${minutes} minute${minutes === 1 ? "" : "s"}`;
+}
+
+function formatClock(seconds: number): string {
+  return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
 }
 
 function LatencyStat({

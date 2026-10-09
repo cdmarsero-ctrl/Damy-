@@ -147,6 +147,26 @@ def target_language(metadata: str | None) -> str | None:
     return value if value in TRANSLATION_LANGUAGES else None
 
 
+# A session can't be longer than this, whatever the metadata says.
+MAX_SESSION_SECONDS = 4 * 3600
+
+
+def max_seconds(metadata: str | None) -> int | None:
+    """How long the session may run (the learner's remaining quota), signed
+    into the token by the web app; None if absent or invalid."""
+    value = _metadata(metadata).get("maxSeconds")
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+        return None
+    if value <= 0:
+        return None
+    return int(min(value, MAX_SESSION_SECONDS))
+
+
+def encode_ending(reason: str) -> bytes:
+    """Agent -> client on CONTROL_TOPIC: the agent is about to end the session."""
+    return json.dumps({"type": "ending", "reason": reason}).encode()
+
+
 def encode_message(message: dict) -> bytes:
     return json.dumps(message, separators=(",", ":")).encode()
 

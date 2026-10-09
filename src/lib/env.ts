@@ -26,6 +26,16 @@ const serverSchema = z.object({
   LIVEKIT_API_KEY: z.string().optional().default(""),
   LIVEKIT_API_SECRET: z.string().optional().default(""),
   INTERPRETER_AGENT_NAME: z.string().min(1).default("interpreter"),
+  // Interpreter minutes per learner per UTC day, and the longest one session may run.
+  INTERPRETER_DAILY_MINUTES: z.coerce.number().positive().default(30),
+  INTERPRETER_MAX_SESSION_MINUTES: z.coerce.number().positive().default(15),
+  // Vendor rates for the cost estimate on the stats page; 0 = not configured.
+  INTERPRETER_COST_ASR_PER_MIN: z.coerce.number().nonnegative().default(0),
+  INTERPRETER_COST_MT_INPUT_PER_MTOK: z.coerce.number().nonnegative().default(0),
+  INTERPRETER_COST_MT_OUTPUT_PER_MTOK: z.coerce.number().nonnegative().default(0),
+  INTERPRETER_COST_MT_CACHE_READ_PER_MTOK: z.coerce.number().nonnegative().default(0),
+  INTERPRETER_COST_MT_CACHE_WRITE_PER_MTOK: z.coerce.number().nonnegative().default(0),
+  INTERPRETER_COST_TTS_PER_1K_CHARS: z.coerce.number().nonnegative().default(0),
   RATE_LIMIT_AUTH_PER_MIN: z.coerce.number().int().positive().default(10),
   RATE_LIMIT_AI_PER_MIN: z.coerce.number().int().positive().default(20),
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),

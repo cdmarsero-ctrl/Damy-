@@ -541,6 +541,47 @@ won't. There AEC and headphones remain the defence.
    consent for voice cloning, with deletion.
 5. Load test: N concurrent sessions per agent worker; autoscale workers on room count.
 
+**Status: built.**
+- **Telemetry.** The agent meters each session (`metering.py`). At the end it
+  sends a report, HMAC-signed with the LiveKit secret, to
+  `POST /api/interpreter/report`. The report holds:
+  - audio seconds, translation tokens and TTS characters;
+  - caption, translation and ear-to-voice p50/p95;
+  - echo words removed.
+
+  The app stores it per session (`InterpreterSession`). `/interpreter/stats`
+  shows per-pair p50/p95, usage and an estimated cost to admins.
+  `telemetry.py` exports the same latencies as OpenTelemetry histograms tagged
+  with the pair, plus per-stage spans, whenever an OTLP endpoint is set.
+- **Resilience.**
+  - After a Deepgram reconnect, the unfinalised audio tail (up to 10 s) is
+    replayed with its original arrival times.
+  - Translation fails over to `INTERPRETER_MT_FALLBACK_MODEL` on transient
+    errors, for 60 s at a time.
+  - Session shutdown no longer hangs in `Room.disconnect()`.
+- **Quotas.** The app enforces daily minutes per learner and a per-session cap,
+  in addition to the existing rate limit. The session's limit is signed into
+  the token, and the agent ends the session there with notice to the page.
+- **Privacy.**
+  - No audio or text is stored or logged; reports and telemetry carry numbers
+    only.
+  - Deepgram's model-improvement opt-out is set.
+  - Vendor zero-retention is a per-account agreement, which the README
+    documents.
+- **Load test** (`loadtest.py`, one 4-vCPU container running everything,
+  including the load generator):
+  - Up to 6 concurrent sessions stayed near single-session latency (voice p50
+    1.4–1.5 s).
+  - At 8 and 10 sessions the host was overloaded; voice p50 rose to 1.8 s and
+    then 2.0 s.
+  - Planning figure: 1.5–2 sessions per vCPU. Autoscale on CPU or rooms per
+    worker, with the worker's load threshold as the backstop.
+
+Not built:
+- failover to a second ASR or TTS vendor;
+- a voice-cloning consent flow (there's no cloning);
+- a test of the dashboards against a real OTLP backend.
+
 **Total: roughly 8–10 weeks** for one experienced engineer pair to production quality on
 the three benchmark language pairs. Additional pairs are mostly configuration (*k*,
 glossary, voice) plus a benchmark run.

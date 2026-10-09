@@ -198,10 +198,19 @@ check "targeted advice is returned" "$([ -n "$(echo "$PRON" | field result.tips.
 INTERP_CODE=$(curl -sS -o /tmp/smoke-interp.json -w '%{http_code}' -X POST "$BASE/api/interpreter/session" \
   -b "$JAR" -c "$JAR" -H 'Content-Type: application/json' -d '{"sourceLanguage":"en","targetLanguage":"es"}')
 INTERP=$(cat /tmp/smoke-interp.json); rm -f /tmp/smoke-interp.json
-check "interpreter session is minted or cleanly unavailable ($INTERP_CODE)" "$(
-  { [ "$INTERP_CODE" = "201" ] && [ -n "$(echo "$INTERP" | field token)" ] && [ -n "$(echo "$INTERP" | field room)" ]; } ||
+# 429 is also correct once repeated runs have used the demo learner's minutes.
+check "interpreter session is minted, out of minutes, or cleanly unavailable ($INTERP_CODE)" "$(
+  { [ "$INTERP_CODE" = "201" ] && [ -n "$(echo "$INTERP" | field token)" ] && [ -n "$(echo "$INTERP" | field maxSeconds)" ]; } ||
+  { [ "$INTERP_CODE" = "429" ] && [ "$(echo "$INTERP" | field code)" = "interpreter_quota" ]; } ||
   { [ "$INTERP_CODE" = "503" ] && [ "$(echo "$INTERP" | field code)" = "interpreter_unavailable" ]; } &&
   echo true || echo false)"
+USAGE=$(req GET /api/interpreter/usage)
+check "interpreter minutes are reported" "$([ -n "$(echo "$USAGE" | field remainingSeconds)" ] && echo true || echo false)"
+# The agent's report endpoint must refuse an unsigned report (401), or be off (503).
+REPORT_CODE=$(curl -sS -o /dev/null -w '%{http_code}' -X POST "$BASE/api/interpreter/report" \
+  -H 'Content-Type: application/json' -H 'x-interpreter-signature: sha256=00' -d '{"room":"x"}')
+check "unsigned interpreter reports are refused ($REPORT_CODE)" \
+  "$([ "$REPORT_CODE" = "401" ] || [ "$REPORT_CODE" = "503" ] && echo true || echo false)"
 
 # -------------------------------------------------------------- exams
 echo

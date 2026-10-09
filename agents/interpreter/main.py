@@ -16,6 +16,10 @@ Joins each interpreter room the web app dispatches it to and:
 * Phase 5: removes its own voice from the learner's captions when echo
   cancellation lets it through (echo_guard.py), reports when that keeps
   happening, and runs an echo check on request.
+* Phase 6: meters each session and reports usage and latency to the web app
+  (metering.py), ends the session at the learner's time limit, exports
+  OpenTelemetry traces and metrics (telemetry.py), replays unfinalised audio
+  after an ASR reconnect, and fails translation over to a second model.
 
 See docs/REALTIME-TRANSLATION.md.
 
@@ -28,6 +32,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import time
 from dataclasses import dataclass
 
 import aiohttp
@@ -40,6 +45,8 @@ from livekit.plugins import silero
 from asr import DEEPGRAM_URL
 from captioner import Captioner
 from echo_guard import CHECK_PHRASES, ECHO_DELAY_S, EchoGuard
+from metering import REPORT_SIGNATURE_HEADER, SessionMeter, encode_report, sign_report
+import telemetry
 from mt import DEFAULT_MODEL, ClaudeTranslator, TranslationError, language_label
 from protocol import (
     ATTR_CAPTIONS,
@@ -64,8 +71,10 @@ from protocol import (
     Ping,
     ToneRequest,
     decode_control,
+    encode_ending,
     encode_message,
     encode_pong,
+    max_seconds,
     encode_tone_started,
     source_language,
     target_language,
@@ -84,6 +93,8 @@ DEEPGRAM_BASE_URL = os.environ.get("DEEPGRAM_URL", DEEPGRAM_URL)
 # (read by the SDK) points it at tests/fake_anthropic.py locally.
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 MT_MODEL = os.environ.get("INTERPRETER_MT_MODEL", DEFAULT_MODEL)
+# Used when MT_MODEL fails with a transient error (overload, 5xx, timeout).
+MT_FALLBACK_MODEL = os.environ.get("INTERPRETER_MT_FALLBACK_MODEL", "")
 # Speech. Voice ids are per Cartesia account (or from its voice library), so
 # there is no default voice.
 CARTESIA_API_KEY = os.environ.get("CARTESIA_API_KEY", "")
@@ -99,6 +110,13 @@ VOICE_JITTER_MS = 200
 # long to wait for the phrase to play at all.
 CHECK_TAIL_S = ECHO_DELAY_S + 1.0
 CHECK_TIMEOUT_S = 20.0
+# Phase 6: where the end-of-session report goes (the web app's
+# POST /api/interpreter/report), signed with the LiveKit API secret. Unset:
+# the report is only logged.
+REPORT_URL = os.environ.get("INTERPRETER_REPORT_URL", "")
+LIVEKIT_API_SECRET = os.environ.get("LIVEKIT_API_SECRET", "")
+# How long the learner hears about the time limit before the agent leaves.
+ENDING_NOTICE_S = 0.5
 
 # Latency at the agent is bounded on both sides of the echo. Input and output
 # run at the same real-time rate, so any backlog a stall creates would never
@@ -132,9 +150,23 @@ def prewarm(proc: JobProcess) -> None:
     # Loading the ONNX model takes ~0.5 s; do it once per worker process
     # rather than on every session's critical path.
     proc.userdata["vad"] = silero.VAD.load()
+    telemetry.setup()
 
 
-server = AgentServer(setup_fnc=prewarm)
+def _server_options() -> dict:
+    """Capacity settings (Phase 6; see the README's load-test section). A
+    worker reports itself full above INTERPRETER_LOAD_THRESHOLD (its CPU load,
+    0-1), so LiveKit sends the job to another worker; idle processes are
+    pre-started so a new session doesn't wait for one."""
+    options: dict = {}
+    if value := os.environ.get("INTERPRETER_LOAD_THRESHOLD"):
+        options["load_threshold"] = float(value)
+    if value := os.environ.get("INTERPRETER_IDLE_PROCESSES"):
+        options["num_idle_processes"] = int(value)
+    return options
+
+
+server = AgentServer(setup_fnc=prewarm, **_server_options())
 
 
 class InterpreterSession:
@@ -152,6 +184,10 @@ class InterpreterSession:
         self.next_check = -1
         self.ending: asyncio.Task[None] | None = None
         self.closed = False
+        self.end_reason = "agent shutdown"
+        self.limit_task: asyncio.Task[None] | None = None
+        self.started_ns = time.time_ns()
+        self.meter = SessionMeter("?", "?", sink=telemetry.Instruments())
 
     async def start(self) -> None:
         tone_track = rtc.LocalAudioTrack.create_audio_track(TRACK_TONE, self.tone_source)
@@ -194,6 +230,10 @@ class InterpreterSession:
     ) -> None:
         if track.kind != rtc.TrackKind.KIND_AUDIO:
             return
+        if publication.name == TRACK_MIC and self.limit_task is None:
+            limit = max_seconds(participant.metadata)
+            if limit is not None:
+                self.limit_task = asyncio.create_task(self.enforce_limit(limit, participant.identity))
         if publication.name == TRACK_MIC and DEEPGRAM_API_KEY and publication.sid not in self.captions:
             self.captions[publication.sid] = asyncio.create_task(self.caption(track, participant))
         out_name = ECHOED_TRACKS.get(publication.name)
@@ -247,15 +287,29 @@ class InterpreterSession:
         target = target_language(participant.metadata)
         logger.info("captioning %s in %s, translating into %s", participant.identity, language, target)
         identity = participant.identity
+        meter = self.meter
+        meter.source, meter.target = language, target or "-"
 
         async def send(topic: str, message: dict) -> None:
             await self._send_to(identity, topic, message)
 
-        translation = self.start_translation(
-            language, target, lambda m: send(TRANSLATION_TOPIC, m), lambda m: send(VOICE_TOPIC, m)
-        )
+        async def send_translation(message: dict) -> None:
+            if message.get("final"):
+                meter.sentence()
+            if isinstance(message.get("flushMs"), (int, float)):
+                meter.translation(message["flushMs"])
+            await send(TRANSLATION_TOPIC, message)
+
+        async def send_voice(message: dict) -> None:
+            if isinstance(message.get("lagMs"), (int, float)):
+                meter.voice(message["lagMs"])
+            await send(VOICE_TOPIC, message)
+
+        translation = self.start_translation(language, target, send_translation, send_voice)
 
         async def publish(message: dict) -> None:
+            if isinstance(message.get("latencyMs"), (int, float)):
+                meter.caption(message["latencyMs"])
             await send(CAPTIONS_TOPIC, message)
             if translation is not None:
                 translation.loop.on_caption(message)
@@ -282,7 +336,14 @@ class InterpreterSession:
             logger.exception("captioning failed")
             await self.set_captions_status("error", "Captioning stopped unexpectedly.")
         finally:
+            # Usage the session's report needs, before the pieces go away.
+            meter.asr(captioner.audio_seconds)
             if translation is not None:
+                if translation.speaker is not None:
+                    meter.tts(translation.speaker.characters_sent)
+                if translation.guard is not None:
+                    stats = translation.guard.stats
+                    meter.echo_removed_words += stats.heard - stats.passed
                 if self.translation is translation:
                     self.translation = None
                 await translation.close()
@@ -310,14 +371,22 @@ class InterpreterSession:
             source_label=language_label(source, LANGUAGE_NAMES),
             target_label=LANGUAGE_NAMES[target],
             model=MT_MODEL,
+            fallback_model=MT_FALLBACK_MODEL or None,
         )
+
+        async def translate(request):
+            result = await translator.translate(request)
+            if result.usage:
+                self.meter.mt(result.usage)
+            return result
+
         speaker = self.make_speaker(target, publish_voice)
         guard = None
         if speaker is not None:
             guard = EchoGuard(target)
             speaker.on_playing = guard.playing
         loop = TranslationLoop(
-            translate=translator.translate,
+            translate=translate,
             publish=publish,
             set_status=self.set_translation_status,
             source=source,
@@ -493,11 +562,28 @@ class InterpreterSession:
         if participant.kind != rtc.ParticipantKind.PARTICIPANT_KIND_AGENT and self.ending is None:
             self.ending = asyncio.create_task(self.end("learner left"))
 
+    async def enforce_limit(self, seconds: int, identity: str) -> None:
+        """Ends the session when the learner's time is up (their remaining
+        daily quota, signed into the token by the web app)."""
+        await asyncio.sleep(seconds)
+        logger.info("session time limit (%d s) reached", seconds)
+        if self.room.isconnected():
+            try:
+                await self.room.local_participant.publish_data(
+                    encode_ending("time-limit"), reliable=True, destination_identities=[identity], topic=CONTROL_TOPIC
+                )
+            except PublishDataError:
+                pass
+        await asyncio.sleep(ENDING_NOTICE_S)
+        self.ending = asyncio.current_task()
+        await self.end("time-limit")
+
     async def end(self, reason: str) -> None:
         # Release our streams and sources before the framework disconnects the
         # room: with audio streams still open, Room.disconnect() can hang and
         # the job is killed after its shutdown deadline (seen in about half of
         # short sessions, before this ordering).
+        self.end_reason = reason
         await self.close()
         self.ctx.shutdown(reason=reason)
 
@@ -507,12 +593,54 @@ class InterpreterSession:
             return
         self.closed = True
         tasks = [*self.echoes.values(), *self.captions.values(), *self.background]
-        if self.tone_task:
-            tasks.append(self.tone_task)
+        for extra in (self.tone_task, self.limit_task):
+            if extra is not None:
+                tasks.append(extra)
+        current = asyncio.current_task()
+        tasks = [t for t in tasks if t is not current]
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
         await self.tone_source.aclose()
+        await self.report()
+
+    async def report(self) -> None:
+        """The end-of-session report: usage and latency, never content."""
+        report = self.meter.report(self.room.name, self.end_reason)
+        span = telemetry.tracer.start_span(
+            "interpreter.session",
+            start_time=self.started_ns,
+            attributes={
+                "pair": self.meter.attributes["pair"],
+                "end_reason": self.end_reason,
+                "duration_s": report["durationSeconds"],
+                **{f"usage.{k}": v for k, v in report["usage"].items()},
+                **{f"quality.{k}": v for k, v in report["quality"].items() if v is not None},
+            },
+        )
+        span.end()
+        body = encode_report(report)
+        if not REPORT_URL:
+            logger.info("session report %s", body.decode())
+        elif not LIVEKIT_API_SECRET:
+            logger.warning("not sending the session report: LIVEKIT_API_SECRET is unset")
+        else:
+            try:
+                async with aiohttp.ClientSession(trust_env=True) as session:
+                    async with session.post(
+                        REPORT_URL,
+                        data=body,
+                        headers={
+                            "Content-Type": "application/json",
+                            REPORT_SIGNATURE_HEADER: sign_report(body, LIVEKIT_API_SECRET),
+                        },
+                        timeout=aiohttp.ClientTimeout(total=5),
+                    ) as response:
+                        if response.status >= 300:
+                            logger.warning("session report rejected: %s %s", response.status, await response.text())
+            except (aiohttp.ClientError, asyncio.TimeoutError) as err:
+                logger.warning("session report not delivered: %s", err)
+        telemetry.flush()
 
 
 def publish_options() -> rtc.TrackPublishOptions:

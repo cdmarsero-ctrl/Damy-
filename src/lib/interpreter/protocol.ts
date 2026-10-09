@@ -121,7 +121,9 @@ export type ControlMessage =
   | { type: "pong"; id: number; sentAt: number }
   | { type: "tone"; durationMs: number }
   | { type: "tone-started"; durationMs: number }
-  | { type: "echo-check" };
+  | { type: "echo-check" }
+  /** Agent → client: the session is about to end, and why ("time-limit"). */
+  | { type: "ending"; reason: string };
 
 export function encodeControl(message: ControlMessage): Uint8Array<ArrayBuffer> {
   return new TextEncoder().encode(JSON.stringify(message));
@@ -151,6 +153,8 @@ export function decodeControl(payload: Uint8Array): ControlMessage | null {
         : null;
     case "echo-check":
       return { type: "echo-check" };
+    case "ending":
+      return typeof m.reason === "string" ? { type: "ending", reason: m.reason } : null;
     default:
       return null;
   }

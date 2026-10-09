@@ -5,9 +5,10 @@ The server-side half of the live interpreter
 worker: the web app's `POST /api/interpreter/session` mints a room token that
 dispatches this agent into a fresh room alongside the learner.
 
-**Current stage: Phase 5, echo protection**: live captions, simultaneous
-translation and a translated voice that is safe with speakers on, with the
-Phase 1 loopback kept as connection diagnostics.
+**Current stage: Phase 6, production readiness**: live captions, simultaneous
+translation and a translated voice that is safe with speakers on. Sessions are
+metered, time-limited and reported to the web app, and the agent exports
+OpenTelemetry. The Phase 1 loopback is kept as connection diagnostics.
 
 | Track or message | Direction | Purpose |
 |---|---|---|
@@ -24,10 +25,82 @@ Phase 1 loopback kept as connection diagnostics.
 | `probe` → `echo-probe` | learner → agent → learner | Tone bursts timed by the browser to measure the audio round trip. |
 | `tone` | agent → learner | A test tone played through the speaker for the automated echo test. |
 | `ping` / `pong` on `interpreter.control` | data channel | Signalling round trip. |
+| `ending` on `interpreter.control` | agent → learner | The agent is about to end the session (`reason: "time-limit"`). |
+| `POST /api/interpreter/report` | agent → web app | End-of-session usage and latency report, HMAC-signed. |
 
-The caption and translation languages come from the learner's participant
-metadata, which the web app signs into their token; the agent re-validates
-them against `CAPTION_LANGUAGES` and `LANGUAGE_NAMES`.
+The caption and translation languages, and the session's time limit
+(`maxSeconds`), come from the learner's participant metadata. The web app
+signs that into their token. The agent re-validates the languages against
+`CAPTION_LANGUAGES` and `LANGUAGE_NAMES` and caps the limit at 4 hours.
+
+### Running it in production
+
+- **Metering and reports** (`metering.py`). Per session the agent counts:
+  - seconds of audio sent to Deepgram;
+  - translation requests and tokens (input, output, cache read and write);
+  - characters sent to Cartesia;
+  - p50/p95 of caption latency, translation lag and ear-to-voice lag;
+  - words removed by the echo guard.
+
+  When the session ends it posts these to `INTERPRETER_REPORT_URL` (the app's
+  `POST /api/interpreter/report`), signed with HMAC-SHA256 under
+  `LIVEKIT_API_SECRET`. No audio and no transcript text are included. The app
+  stores each report and shows them per language pair on `/interpreter/stats`
+  (admins), with an estimated cost when `INTERPRETER_COST_*` rates are set.
+  Without a report URL the report is only logged.
+- **Quotas.** The app gives each learner `INTERPRETER_DAILY_MINUTES` per UTC
+  day (default 30), in sessions of at most `INTERPRETER_MAX_SESSION_MINUTES`
+  (default 15). It signs the session's limit into the token. At the limit the
+  agent tells the page (`ending`) and leaves, and the page explains why.
+  - A session without a report counts at its full limit, since the agent ends
+    every session there. So configure the report URL.
+  - If the agent never joins, the page releases the session, so it costs
+    nothing.
+- **OpenTelemetry** (`telemetry.py`). Set `OTEL_EXPORTER_OTLP_ENDPOINT` (and
+  optionally `OTEL_EXPORTER_OTLP_HEADERS`, `OTEL_SERVICE_NAME`) to export over
+  OTLP/HTTP.
+  - Metrics, tagged with `pair`: `interpreter.caption.latency`,
+    `interpreter.translation.flush` and `interpreter.voice.lag` (histograms,
+    in ms), plus `interpreter.asr.seconds`, `interpreter.mt.tokens` and
+    `interpreter.tts.characters` (counters).
+  - The ear-to-voice p50/p95 dashboard per pair is a histogram quantile over
+    `interpreter.voice.lag`, grouped by `pair`.
+  - Spans: `interpreter.mt` per translation request, `interpreter.tts.sentence`
+    from first text to first audio, and `interpreter.session`. LiveKit's own
+    spans go through the same exporter with PII stripped.
+- **Resilience.**
+  - **Speech recognition:** if the connection drops mid-utterance, the audio
+    no final result covers yet (up to 10 s) is replayed on the new connection
+    with its original arrival times. Words aren't lost, and caption latency
+    stays honest.
+  - **Translation:** with `INTERPRETER_MT_FALLBACK_MODEL` set, a transient
+    failure (overload, 5xx, timeout, rate limit) is retried at once on the
+    fallback model, which then serves for 60 s before the main model is tried
+    again. Auth and unknown-model errors don't fail over; they need fixing.
+  - **Speech:** the voice already reconnects with backoff. Sentences in flight
+    play what had arrived.
+  - **Not built:** failover to a second ASR or TTS vendor. The adapters are the
+    seam for it.
+- **Privacy.**
+  - No audio is recorded or stored by the agent or the app.
+  - Transcripts and translations exist only in memory for the session. Logs,
+    reports and telemetry carry numbers, not text.
+  - Deepgram requests opt out of its Model Improvement Program
+    (`mip_opt_out=true`).
+  - Anthropic API inputs aren't used for training. Zero data retention for
+    Anthropic, and any retention setting for Cartesia, are account-level
+    agreements with each vendor, not request flags.
+  - Voice cloning isn't built, so there is no voice data to consent to or
+    delete.
+- **Capacity.** See "Load test" below. Each session is its own process.
+  `INTERPRETER_LOAD_THRESHOLD` sets the CPU load (0–1) above which a worker
+  reports itself full, so LiveKit dispatches to another. The default is 0.7 in
+  `start` mode.
+  - `INTERPRETER_IDLE_PROCESSES` pre-starts processes so a new session doesn't
+    wait for one.
+  - Autoscale workers on CPU, or on active rooms per worker, from LiveKit's
+    room count or the `interpreter.*` metrics. Keep each worker under about
+    1.5 sessions per vCPU (see the load test).
 
 ### How captioning works
 
@@ -187,10 +260,83 @@ DEEPGRAM_API_KEY=fake DEEPGRAM_URL=ws://127.0.0.1:8765/v1/listen \
 | `INTERPRETER_TTS_MODEL` | `sonic-3.6` | Cartesia model. |
 | `INTERPRETER_TTS_BUFFER_MS` | `300` | Server-side text buffering per sentence (0–5000). |
 | `INTERPRETER_AGENT_NAME` | `interpreter` | Must match the app's. |
+| `INTERPRETER_MT_FALLBACK_MODEL` | — | Second translation model, used while the main one fails transiently. |
+| `INTERPRETER_REPORT_URL` | — | The app's `/api/interpreter/report`; unset, reports are only logged. |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | — | Export traces and metrics over OTLP/HTTP. |
+| `INTERPRETER_LOAD_THRESHOLD` | `0.7` (`start` mode) | Worker CPU load above which it takes no new sessions. |
+| `INTERPRETER_IDLE_PROCESSES` | LiveKit default | Pre-started job processes. |
 
 In `start` (production) mode the worker stops accepting jobs once host CPU
 passes 70 %; `dev` mode doesn't. The LiveKit server applies its own load check
 in both modes, though (see Troubleshooting).
+
+## Load test
+
+`loadtest.py` runs N simulated learners at once. Each joins its own room with
+a dispatch token, plays a speech clip on `mic` in real time, and records the
+caption, translation and voice figures the agent reports.
+
+```bash
+python loadtest.py --clip speech.wav --sessions 1 4 8 --seconds 40
+```
+
+These results come from one 4-vCPU container running everything at once: the
+LiveKit server, the three fakes, the app, the agent and the load generator
+itself. The fakes stood in for the vendors (200 ms recognition, 250 ms model,
+150 ms TTS), with a 12 s English clip translated into Spanish.
+
+| Sessions | Agent joined | Caption p50 / p95 | Translation p50 / p95 | Voice p50 / p95 | Host load (1 min, max) |
+|---|---|---|---|---|---|
+| 1 | 1/1 | 202 / 442 ms | 262 / 263 ms | 1386 / 1515 ms | 0.9 |
+| 2 | 2/2 | 202 / 423 ms | 261 / 265 ms | 1389 / 1505 ms | 2.1 |
+| 4 | 4/4 | 203 / 446 ms | 268 / 282 ms | 1404 / 4438 ms* | 2.7 |
+| 6 | 6/6 | 206 / 434 ms | 282 / 310 ms | 1465 / 1617 ms | 5.1 |
+| 8 | 8/8 | 229 / 446 ms | 368 / 506 ms | 1822 / 2437 ms | 12.7 |
+| 10 | 10/10 | 289 / 499 ms | 498 / 757 ms | 2038 / 16446 ms | 21.5 |
+
+\* One sentence's voice was delayed while a job process started up. The other
+26 sentences were within 1.6 s.
+
+Up to 6 sessions the latencies stay near the single-session figures. At 8 the
+host is overloaded and every stage slows. At 10 the voice falls far behind:
+playout backs up when the agent can't keep real time.
+
+With the agent alone on its host (the vendors are remote in production), a
+reasonable planning figure is 1.5–2 sessions per vCPU. Set the load threshold
+so LiveKit stops dispatching before that. Re-run this on the production
+instance type with real keys; recognition, translation and speech latency then
+come from the vendors, not the fakes.
+
+## Phase 6 exit criteria
+
+- **Per-stage telemetry and an ear-to-voice dashboard per pair.** Done:
+  OpenTelemetry metrics and spans, plus the `/interpreter/stats` page from the
+  session reports.
+- **Resilience.** Done: the speech-recognition replay, translation-model
+  failover, and the shutdown fix below. A second ASR or TTS vendor isn't built.
+- **Quotas and cost metering.** Done: per-learner daily minutes, a session
+  time limit enforced by the agent, and usage stored per session.
+- **Privacy.** Done:
+  - no audio is stored;
+  - no text is stored or logged;
+  - the Deepgram model-improvement opt-out is set;
+  - vendor retention agreements are documented above.
+- **Load test.** Done: the table above. Autoscaling itself belongs to the
+  deployment platform; the settings are above.
+
+Verified with the fakes, LiveKit, the agent and the app in one container:
+- A 45 s time limit ended a live session at 46 s with the page's explanation.
+  The stored report had the duration, end reason, usage (35 s of audio,
+  122 translation requests, 1314 TTS characters) and latency (caption
+  203/406 ms, translation 262/265 ms, ear-to-voice 1387/1400 ms).
+- `/interpreter/stats` showed that pair's figures and an estimated cost.
+- A dropped speech-recognition connection replayed its lost second of audio
+  (test). Translation failed over and back (test).
+- Session shutdown (fixed with Phase 5): previously 5 of 6 short sessions were
+  killed at the 10 s shutdown deadline because `Room.disconnect()` hung. The
+  agent now closes its own streams first and doesn't unpublish during
+  teardown. None of the 33 sessions in this phase's final runs, load test
+  included, was killed.
 
 ## Phase 5 exit criteria
 
