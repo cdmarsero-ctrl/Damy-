@@ -114,8 +114,12 @@ class TranslationLoop:
         target: str,
         on_commit: OnCommit | None = None,
         clock: Callable[[], float] = time.monotonic,
+        ceiling: int | None = None,
     ) -> None:
         self._on_commit = on_commit
+        # The wait-k lag ceiling; the per-pair default unless overridden (the
+        # Phase 0 benchmark sweeps it to pick k per pair).
+        self._ceiling = ceiling if ceiling is not None else lag_ceiling(source, target)
         self._translate = translate
         self._publish = publish
         self._set_status = set_status
@@ -133,7 +137,7 @@ class TranslationLoop:
         self._status: tuple[str, str] | None = None
 
     def _new_policy(self) -> CommitPolicy:
-        return CommitPolicy(target=self._target, ceiling=lag_ceiling(self._source, self._target))
+        return CommitPolicy(target=self._target, ceiling=self._ceiling)
 
     def on_caption(self, message: dict) -> None:
         """Called for every caption-stream message, in order."""

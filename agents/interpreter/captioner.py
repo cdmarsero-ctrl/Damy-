@@ -13,7 +13,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import AsyncIterable, Awaitable, Callable, Sequence
 from dataclasses import dataclass
 
 import aiohttp
@@ -44,6 +44,9 @@ STABLE_STREAM_S = 10.0
 
 Publish = Callable[[dict], Awaitable[None]]
 SetStatus = Callable[[str, str], Awaitable[None]]
+#: Sees every raw recognition result, with each word's arrival time, before
+#: the echo guard (the Phase 0 benchmark logs per-word timings with it).
+OnResult = Callable[[AsrResult, "list[float | None]"], None]
 
 
 @dataclass(frozen=True)
@@ -68,6 +71,7 @@ class Captioner:
         set_status: SetStatus,
         echo_guard: EchoGuard | None = None,
         set_echo_status: SetStatus | None = None,
+        on_result: OnResult | None = None,
     ) -> None:
         self._vad = vad
         self._api_key = api_key
@@ -83,13 +87,12 @@ class Captioner:
         self.audio_seconds = 0.0
         self._tracker = CaptionTracker()
         self._guard = echo_guard
+        self._on_result = on_result
         self._set_echo_status = set_echo_status
         # The session publishes "clean" when it starts the guard.
         self._echo_status = "clean"
 
     async def run(self, track: rtc.Track) -> None:
-        await self._set_status("starting", "")
-        vad_stream = self._vad.stream()
         audio = rtc.AudioStream(
             track,
             sample_rate=SAMPLE_RATE,
@@ -97,8 +100,23 @@ class Captioner:
             frame_size_ms=FRAME_MS,
             capacity=STREAM_CAPACITY_FRAMES,
         )
+
+        async def frames():
+            async for event in audio:
+                yield event.frame
+
+        try:
+            await self.run_frames(frames())
+        finally:
+            await audio.aclose()
+
+    async def run_frames(self, frames: AsyncIterable[rtc.AudioFrame]) -> None:
+        """Captions 16 kHz mono frames from any source: a LiveKit track
+        (`run`), or a recording replayed in real time (bench.py)."""
+        await self._set_status("starting", "")
+        vad_stream = self._vad.stream()
         tasks = [
-            asyncio.create_task(self._read_audio(audio, vad_stream), name="captions-audio"),
+            asyncio.create_task(self._read_audio(frames, vad_stream), name="captions-audio"),
             asyncio.create_task(self._read_vad(vad_stream), name="captions-vad"),
         ]
         try:
@@ -108,14 +126,12 @@ class Captioner:
             for task in tasks:
                 task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
-            await audio.aclose()
             await vad_stream.aclose()
 
     # --------------------------------------------------------------- input
 
-    async def _read_audio(self, audio: rtc.AudioStream, vad_stream: agents_vad.VADStream) -> None:
-        async for event in audio:
-            frame = event.frame
+    async def _read_audio(self, frames: AsyncIterable[rtc.AudioFrame], vad_stream: agents_vad.VADStream) -> None:
+        async for frame in frames:
             vad_stream.push_frame(frame)
             chunk = Chunk(bytes(frame.data), frame.samples_per_channel, time.monotonic())
             for item in self._gate.push(chunk):
@@ -220,10 +236,13 @@ class Captioner:
                 end = event.end if event.end is not None else event.audio_end
                 if end is not None:
                     self._replay.finalized(end)
-            if self._guard is not None:
+            if self._on_result is not None or self._guard is not None:
                 arrivals = [self._clock.arrival_of(w.end) for w in event.words]
-                event = self._guard.filter(event, arrivals)
-                await self._report_echo()
+                if self._on_result is not None:
+                    self._on_result(event, arrivals)
+                if self._guard is not None:
+                    event = self._guard.filter(event, arrivals)
+                    await self._report_echo()
             latency_ms = None
             if event.audio_end is not None:
                 arrived = self._clock.arrival_of(event.audio_end)

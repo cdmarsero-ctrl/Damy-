@@ -270,6 +270,52 @@ In `start` (production) mode the worker stops accepting jobs once host CPU
 passes 70 %; `dev` mode doesn't. The LiveKit server applies its own load check
 in both modes, though (see Troubleshooting).
 
+## Benchmarks (Phase 0)
+
+`bench.py` plays recorded speech in real time through the agent's own captioner,
+translation loop and speaker. There is no LiveKit or browser, so it measures the
+pipeline alone.
+
+```bash
+python bench.py --manifest clips.jsonl --out bench-results --k 3 4 6 \
+  --mt-model claude-haiku-5-5 claude-sonnet-5-5
+```
+
+The manifest has one clip per line:
+`{"audio": "en-1.wav", "source": "en", "target": "es", "reference": "...", "translation": "..."}`.
+- The audio must be 16-bit WAV, at any rate.
+- `reference` (the source transcript) and `translation` (a reference translation) are
+  optional.
+- Each clip runs once per combination of `--k` (lag ceilings to sweep; default per
+  pair) and `--mt-model`.
+- It uses the same environment variables as the agent. Stages without a key are
+  skipped, and the fakes work too.
+
+Output in `--out`:
+- **`summary.md`:** one row per pair, model and k.
+  - Latencies (p50 / p95): caption interim and final per word, first commit from a
+    sentence's first words, flush from its end, and ear-to-voice.
+  - Caption WER and translation chrF, when references are given.
+- **`results.json`:** per clip, including usage.
+- **`sentences.tsv`:** every sentence's source and translation, for bilingual review
+  or COMET.
+- **`*.events.jsonl`:** every stage's events, timestamped from the clip's start: each
+  word's audio end and recognition, each commit, each first audio.
+
+To choose k for a pair, sweep `--k` and take the smallest value whose translations
+reviewers accept. Smaller k commits sooner, but with less of the sentence heard.
+
+With the fakes on one 12 s English clip:
+
+| k | First commit (p50) | Ear-to-voice (p50) |
+|---|---|---|
+| 2 | 695 ms | 848 ms |
+| 4 | 955 ms | 1108 ms |
+| 8 | 957 ms | 1109 ms |
+
+These numbers only check the harness. The real benchmark needs recordings, references
+and keys.
+
 ## Load test
 
 `loadtest.py` runs N simulated learners at once. Each joins its own room with
@@ -448,7 +494,7 @@ pytest tests
 ```
 
 The tests cover the pure modules (protocol, captions, gate, tone, commit
-policy, playout and speed rules, echo guard), drive the translation loop with
+policy, playout and speed rules, echo guard, metering, benchmark scoring), drive the translation loop with
 a scripted translator, run the Deepgram client, the Claude adapter (through
 the real Anthropic SDK) and the speaker against the three fakes, simulate
 speakers-on echo, and check that protocol constants and language lists match

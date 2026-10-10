@@ -415,6 +415,39 @@ middle of the pipeline costs more than any model choice.
 3. Benchmark one end-to-end speech-to-speech model as the comparison baseline.
 4. **Exit criteria:** chosen vendors, initial *k* per pair, measured budget per stage.
 
+**Status: harness built; the benchmark itself needs keys and recordings.**
+`agents/interpreter/bench.py` plays recorded speech in real time through the agent's own
+pipeline, without LiveKit or a browser. It uses the same Captioner (Silero gate and
+Deepgram), TranslationLoop and Speaker as the live agent. It logs every stage with
+timestamps and reports, per language pair, model and *k*:
+- caption latency per word (interim and final);
+- first-commit lag, measured from a sentence's first words;
+- flush, measured from a sentence's end;
+- ear-to-voice;
+- caption WER and translation chrF against reference texts, when given.
+
+Every sentence's source and translation goes to a TSV for bilingual review or COMET.
+`--k` sweeps the lag ceiling, which is how *k* per pair is chosen, and `--mt-model`
+compares translation models.
+
+Checked with the fakes on one English clip (simulated 200 ms ASR, 250 ms model, 150 ms
+TTS):
+
+| *k* | First commit (p50) | Ear-to-voice (p50) |
+|---|---|---|
+| 2 | 695 ms | 848 ms |
+| 4 | 955 ms | 1108 ms |
+| 8 | 957 ms | 1109 ms |
+
+These show the harness measures the trade-off; they are not vendor figures.
+
+Still to do:
+- **The benchmark:** about 30 minutes of varied speech per pair (EN→ES, EN→DE, EN→JA),
+  with reference transcripts and translations, run with real keys.
+- **The alternative vendors:** a second ASR, ElevenLabs TTS and a speech-to-speech
+  baseline need their own adapters. The pipeline's adapters (`asr.py`, `mt.py`,
+  `tts.py`) are the seam for them.
+
 ### Phase 1 — Transport skeleton (1 week)
 1. Stand up LiveKit (Cloud for dev). Token endpoint in the Next.js app:
    `POST /api/interpreter/session` → validates the session, returns a room token. API keys
