@@ -1,0 +1,13 @@
+# Pinned: the agent talks to LiveKit over an evolving protocol, so upgrades
+# should be deliberate and re-tested with the loopback console.
+livekit-agents==1.8.2
+livekit==1.1.18
+# Silero VAD (bundles its ONNX model) gates audio to the ASR.
+livekit-plugins-silero==1.8.2
+# Claude for simultaneous translation (Phase 3).
+anthropic==1.7.0
+# OpenTelemetry export (Phase 6); livekit-agents depends on these already,
+# pinned here because telemetry.py imports them directly.
+opentelemetry-api==1.44.0
+opentelemetry-sdk==1.44.0
+opentelemetry-exporter-otlp-proto-http==1.44.0

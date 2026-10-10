@@ -17,7 +17,9 @@ import { jwtVerify } from "jose/jwt/verify";
 // unsupported in the Edge Runtime. We only sign and verify JWS.
 const ACCESS_COOKIE = "lx_at";
 
-const PUBLIC_PATHS = ["/", "/login", "/register"];
+// The interpreter agent's report has no user session: the route itself
+// authenticates it by an HMAC of the body (see its handler).
+const PUBLIC_PATHS = ["/", "/login", "/register", "/api/interpreter/report"];
 const PUBLIC_PREFIXES = ["/api/auth/", "/_next/", "/favicon", "/manifest", "/sw.js", "/icons/"];
 
 function isPublic(pathname: string): boolean {

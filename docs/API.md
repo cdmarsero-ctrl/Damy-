@@ -237,6 +237,78 @@ Planning help offered *before* writing, which is where most learners need it.
 Receives **text, not audio**. The browser transcribes locally, so voice data never
 reaches the server.
 
+### `POST /api/interpreter/session`
+```jsonc
+// → { sourceLanguage?: "multi" | "en" | "es" | "fr" | "de" | "it" | "pt" | "nl" | "ja" | "ru" | "hi",
+//     targetLanguage?: "en" | "es" | "fr" | "de" | … (19 codes; see TRANSLATION_LANGUAGES) }
+// ← 201 { url, token, room, identity, maxSeconds }
+// ← 429 { code: "interpreter_quota" } when today's minutes are used up
+// ← 503 { code: "interpreter_unavailable" } when LIVEKIT_* is not configured
+```
+Mints a 10-minute, single-room LiveKit token for a fresh room and dispatches the
+interpreter agent into it. `sourceLanguage` (default `multi`, auto-detect) is the
+caption language and `targetLanguage` (default `es`) the translation language;
+they must differ (422 otherwise). Both are signed into the participant
+metadata, where the agent reads them. The browser joins with `url` + `token`; vendor
+credentials never leave the server. Rate-limited per user under the AI limit.
+Audio flows over WebRTC to the agent, not through this API; see
+[REALTIME-TRANSLATION.md](REALTIME-TRANSLATION.md).
+
+Each session is recorded (`InterpreterSession`) and limited to the learner's
+remaining daily minutes (`INTERPRETER_DAILY_MINUTES`, default 30, reset at
+midnight UTC), capped at `INTERPRETER_MAX_SESSION_MINUTES` (default 15). That
+limit is returned as `maxSeconds` and signed into the token; the agent ends the
+session there, telling the page first. A session whose report hasn't arrived
+counts as used up to its limit.
+
+### `POST /api/interpreter/session/release`
+```jsonc
+// → { room }
+// ← { released: boolean }
+```
+The page calls this when the agent never joined. The learner's own unreported
+session is then counted as 0 minutes, not its full limit. If an agent did join
+after all, its report replaces this.
+
+### `GET /api/interpreter/usage`
+```jsonc
+// ← { dailySeconds, usedSeconds, remainingSeconds, maxSessionSeconds }
+```
+The learner's interpreter time today.
+
+### `POST /api/interpreter/report`
+Called by the agent, not the browser, when a session ends. The body is
+`{ room, durationSeconds, endReason, usage: { asrSeconds, mtRequests, mtInputTokens,
+mtOutputTokens, mtCacheReadTokens, mtCacheWriteTokens, ttsCharacters }, quality:
+{ sentences, captionP50Ms, captionP95Ms, translationP50Ms, translationP95Ms,
+voiceP50Ms, voiceP95Ms, echoRemovedWords } }`. It carries numbers only, never audio
+or transcript text.
+
+It is authenticated by `x-interpreter-signature: sha256=<hex>`: an HMAC-SHA256 of the
+raw body under `LIVEKIT_API_SECRET`, a secret the agent already holds.
+
+| Response | When |
+|---|---|
+| 204 | Stored |
+| 401 | Bad signature |
+| 404 | Unknown room |
+| 409 | The session was already reported (a session released as "no-agent" can still be reported once) |
+
+### `GET /api/interpreter/stats?days=7`
+Admins only (403 otherwise).
+
+```jsonc
+// ← { days, sessions, unreported, costConfigured,
+//     pairs: [{ pair, sessions, minutes,
+//               caption: { p50, p95 }, translation: { p50, p95 }, voice: { p50, p95 },
+//               echoRemovedWords, usage: { … }, cost }] }
+```
+Per language pair:
+- `p50` is the median of each session's median, and `p95` the 95th percentile of each session's 95th percentile.
+- `cost` is estimated from the `INTERPRETER_COST_*` rates, and is null when they aren't set.
+
+The page `/interpreter/stats` shows the same data.
+
 ---
 
 ## Exams

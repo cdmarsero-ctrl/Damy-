@@ -4,7 +4,7 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState, type ReactNode } from "react";
 import {
-  Award, BarChart3, BookOpen, Flame, GraduationCap, Languages, LayoutDashboard,
+  AudioLines, Award, BarChart3, BookOpen, Flame, GraduationCap, Languages, LayoutDashboard,
   LogOut, Menu, Mic, MessageSquareText, Moon, PenLine, Repeat, Settings, Sun,
   Swords, Trophy, X, Zap,
 } from "lucide-react";
@@ -47,6 +47,7 @@ const NAV_GROUPS: { label: string; items: { href: string; label: string; icon: t
       { href: "/debate", label: "Debate", icon: Swords },
       { href: "/writing", label: "Writing studio", icon: PenLine },
       { href: "/pronunciation", label: "Pronunciation", icon: Mic },
+      { href: "/interpreter", label: "Live interpreter", icon: AudioLines },
     ],
   },
   {
