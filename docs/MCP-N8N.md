@@ -93,9 +93,10 @@ curl -i -X POST "$N8N_MCP_URL" \
 Changing either variable requires restarting Claude Code: they are expanded once, at
 startup.
 
-### Using it from Codex as well
+### Using it from Codex or Every Code
 
-Codex CLI reads its own `~/.codex/config.toml`, not `.mcp.json`. The equivalent is:
+Neither reads `.mcp.json`. Codex CLI uses `~/.codex/config.toml`; Every Code, the
+Codex fork, uses `~/.code/config.toml`. The block is the same for both:
 
 ```toml
 [features]
@@ -105,3 +106,11 @@ experimental_use_rmcp_client = true
 url = "https://n8n.example.com/mcp-server/http"
 bearer_token_env_var = "N8N_MCP_TOKEN"
 ```
+
+- `bearer_token_env_var` names the variable to read the token from, so the file never
+  holds the value. Export `N8N_MCP_TOKEN` in the shell that starts the client, as
+  above. Older releases do not recognise the key; update the client if the server
+  connects without authenticating.
+- If the file already has a `[features]` table, add the `experimental_use_rmcp_client`
+  line to it instead. A repeated table makes the whole file invalid TOML.
+- Confirm with `/mcp` inside the client: `n8n` should be listed with its tools.
