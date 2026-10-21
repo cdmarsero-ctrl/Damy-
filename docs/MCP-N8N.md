@@ -70,7 +70,7 @@ to token authentication.
 The approval step redirects the browser back to Claude Code on the machine it runs
 on. That works on your own computer. In a cloud session, or over SSH, the redirect
 may not reach the session; authenticate from a local Claude Code instead, or use a
-token as described for Codex below.
+token as described under *Token fallback* below.
 
 ---
 
@@ -117,10 +117,8 @@ startup.
 ### Using it from Codex or Every Code
 
 Neither reads `.mcp.json`. Codex CLI uses `~/.codex/config.toml`; Every Code, the
-Codex fork, uses `~/.code/config.toml`. These use a personal access token instead of
-OAuth: generate it in n8n under **Connection details › Connect › API key**, and copy
-it before leaving the tab, since n8n shows only a redacted value afterwards. The
-block is the same for both:
+Codex fork, uses `~/.code/config.toml`. Both can sign in with OAuth too. The block is
+the same for both, with no token in it:
 
 ```toml
 [features]
@@ -128,15 +126,39 @@ experimental_use_rmcp_client = true
 
 [mcp_servers.n8n]
 url = "https://n8n.example.com/mcp-server/http"
+```
+
+Then sign in once from the terminal. A browser opens on n8n; approve access there:
+
+```bash
+codex mcp login n8n   # Codex
+code mcp login n8n    # Every Code (installed as `coder` if `code` is taken)
+```
+
+- The client keeps the credentials in the system keyring, or in its own config
+  directory where no keyring is available, and refreshes them itself.
+  `mcp logout n8n` removes them.
+- The `experimental_use_rmcp_client` flag is what enables OAuth for HTTP servers.
+  Newer releases may have renamed or retired it; if `mcp login` reports that OAuth
+  is unsupported, check the flag your version expects.
+- `mcp login` is documented for Codex. Every Code inherits Codex's MCP client, but
+  its own docs do not mention the command; if your version lacks it, update the
+  client or use the token fallback below.
+- If the file already has a `[features]` table, add the `experimental_use_rmcp_client`
+  line to it instead. A repeated table makes the whole file invalid TOML.
+- Confirm with `/mcp` inside the client: `n8n` should be listed with its tools.
+
+#### Token fallback
+
+For a remote machine where the browser redirect cannot come back, or a client
+without `mcp login`, use a personal access token instead. Generate it in n8n under
+**Connection details › Connect › API key**, and copy it before leaving the tab:
+n8n shows only a redacted value afterwards. Add one line to the block above:
+
+```toml
 bearer_token_env_var = "N8N_MCP_TOKEN"
 ```
 
-- `bearer_token_env_var` names the variable to read the token from, so the file never
-  holds the value. Export `N8N_MCP_TOKEN` in the shell that starts the client.
-  Older releases do not recognise the key; update the client if the server
-  connects without authenticating.
-- If the file already has a `[features]` table, add the `experimental_use_rmcp_client`
-  line to it instead. A repeated table makes the whole file invalid TOML.
-- Generating a new token in n8n revokes the previous one at once; update the
-  variable and restart the client.
-- Confirm with `/mcp` inside the client: `n8n` should be listed with its tools.
+It names the variable to read the token from, so the file never holds the value.
+Export `N8N_MCP_TOKEN` in the shell that starts the client. Generating a new token
+in n8n revokes the previous one at once; update the variable and restart the client.
