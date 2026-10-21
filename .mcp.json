@@ -7,10 +7,7 @@
     },
     "n8n": {
       "type": "http",
-      "url": "${N8N_MCP_URL:-http://localhost:5678/mcp-server/http}",
-      "headers": {
-        "Authorization": "Bearer ${N8N_MCP_TOKEN:-}"
-      }
+      "url": "${N8N_MCP_URL:-http://localhost:5678/mcp-server/http}"
     }
   }
 }
