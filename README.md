@@ -108,6 +108,7 @@ unauthenticated access, weak passwords and stale sessions are all rejected.
 | [docs/SECURITY.md](docs/SECURITY.md) | Threat model, auth design, and what is deliberately not implemented |
 | [docs/MCP-OPENAI.md](docs/MCP-OPENAI.md) | Consulting GPT from a Claude Code session through the bundled MCP server |
 | [docs/MCP-N8N.md](docs/MCP-N8N.md) | Connecting a Claude Code session to an n8n instance's MCP endpoint |
+| [docs/VOICE-AGENT.md](docs/VOICE-AGENT.md) | The DAMI voice agent page (ElevenLabs Conversational AI): session flow, configuration, privacy |
 
 ---
 
