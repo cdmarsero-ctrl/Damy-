@@ -67,7 +67,8 @@ nothing silently degrades without the learner being told. See
 Separately, and only during development, `.mcp.json` registers an MCP server that lets
 Claude Code consult a GPT model — for a second opinion or an independent code review,
 never as the model driving the session. It reuses the same key and does not touch the
-runtime AI layer. See [docs/MCP-OPENAI.md](docs/MCP-OPENAI.md).
+runtime AI layer. See [docs/MCP-OPENAI.md](docs/MCP-OPENAI.md). A second entry connects
+Claude Code to an n8n instance's workflows; see [docs/MCP-N8N.md](docs/MCP-N8N.md).
 
 ---
 
@@ -106,6 +107,7 @@ unauthenticated access, weak passwords and stale sessions are all rejected.
 | [docs/ACCESSIBILITY.md](docs/ACCESSIBILITY.md) | The WCAG 2.1 conformance position, feature by feature |
 | [docs/SECURITY.md](docs/SECURITY.md) | Threat model, auth design, and what is deliberately not implemented |
 | [docs/MCP-OPENAI.md](docs/MCP-OPENAI.md) | Consulting GPT from a Claude Code session through the bundled MCP server |
+| [docs/MCP-N8N.md](docs/MCP-N8N.md) | Connecting a Claude Code session to an n8n instance's MCP endpoint |
 
 ---
 
@@ -150,7 +152,7 @@ src/
     gamification.ts      XP, levels, streaks, badges
 tools/
   mcp/openai/            MCP server: lets Claude Code consult GPT during development
-docs/                    Eleven documents
+docs/                    Twelve documents
 scripts/smoke.sh         56-check end-to-end test
 ```
 

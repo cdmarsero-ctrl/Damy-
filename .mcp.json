@@ -4,6 +4,13 @@
       "type": "stdio",
       "command": "npx",
       "args": ["tsx", "tools/mcp/openai/server.ts"]
+    },
+    "n8n": {
+      "type": "http",
+      "url": "${N8N_MCP_URL:-http://localhost:5678/mcp-server/http}",
+      "headers": {
+        "Authorization": "Bearer ${N8N_MCP_TOKEN:-}"
+      }
     }
   }
 }
