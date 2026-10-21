@@ -6,7 +6,7 @@ import { useEffect, useState, type ReactNode } from "react";
 import {
   Award, BarChart3, BookOpen, Flame, GraduationCap, Languages, LayoutDashboard,
   LogOut, Menu, Mic, MessageSquareText, Moon, PenLine, Repeat, Settings, Sun,
-  Swords, Trophy, X, Zap,
+  AudioLines, Swords, Trophy, X, Zap,
 } from "lucide-react";
 
 import { LevelPill, Progress } from "@/components/ui";
@@ -44,6 +44,7 @@ const NAV_GROUPS: { label: string; items: { href: string; label: string; icon: t
     label: "Practise",
     items: [
       { href: "/tutor", label: "Conversation", icon: MessageSquareText },
+      { href: "/voice", label: "Voice (DAMI)", icon: AudioLines },
       { href: "/debate", label: "Debate", icon: Swords },
       { href: "/writing", label: "Writing studio", icon: PenLine },
       { href: "/pronunciation", label: "Pronunciation", icon: Mic },
