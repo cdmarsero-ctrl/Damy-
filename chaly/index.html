@@ -38,9 +38,9 @@
     /* Portada */
     .hero { min-height: 100svh; display: grid; place-items: end start; position: relative; overflow: hidden; }
     .hero-bg { position: absolute; inset: 0; background:
-        radial-gradient(ellipse at 70% 30%, rgba(201,163,106,.18), transparent 60%),
+        linear-gradient(90deg, rgba(11,10,12,.85) 0%, rgba(11,10,12,.35) 45%, transparent 70%),
         linear-gradient(180deg, rgba(11,10,12,0) 40%, var(--bg) 100%),
-        var(--hero-img, linear-gradient(135deg, #1d181c, #0b0a0c)) center / cover no-repeat; }
+        var(--hero-img, linear-gradient(135deg, #1d181c, #0b0a0c)) 70% 0% / cover no-repeat; }
     .hero .wrap { position: relative; padding-bottom: 14vh; }
     .eyebrow { font-size: .75rem; letter-spacing: .35em; text-transform: uppercase; color: var(--accent); }
     .hero h1 { font-family: var(--serif); font-weight: 400; font-size: clamp(4rem, 14vw, 10rem); line-height: .9; margin: 16px 0 24px; }
@@ -59,12 +59,18 @@
     .stats dd { font-family: var(--serif); font-size: 1.6rem; }
 
     /* Galería */
-    .gallery { columns: 3 260px; column-gap: 16px; }
-    .gallery figure { break-inside: avoid; margin-bottom: 16px; cursor: zoom-in; overflow: hidden; background: var(--bg-2); border: 1px solid var(--line); }
-    .gallery img, .gallery .ph { width: 100%; transition: transform .6s, filter .6s; filter: grayscale(.35); }
-    .gallery figure:hover img, .gallery figure:hover .ph { transform: scale(1.04); filter: none; }
-    .ph { display: grid; place-items: center; color: var(--muted); font-size: .75rem; letter-spacing: .2em; text-transform: uppercase;
-          background: linear-gradient(160deg, #1f1a1e, #100e11); }
+    .carousel { position: relative; }
+    .gallery { display: flex; gap: 16px; overflow-x: auto; scroll-snap-type: x mandatory; scrollbar-width: none; }
+    .gallery::-webkit-scrollbar { display: none; }
+    .gallery figure { flex: 0 0 min(520px, 85%); scroll-snap-align: start; cursor: zoom-in; overflow: hidden; background: var(--bg-2); border: 1px solid var(--line); }
+    .gallery img { width: 100%; aspect-ratio: 4/5; object-fit: cover; transition: transform .6s, filter .6s; filter: grayscale(.35); }
+    .gallery figure:hover img { transform: scale(1.04); filter: none; }
+    .carousel-nav { display: flex; justify-content: space-between; align-items: center; margin-top: 24px; }
+    .carousel-nav button { background: none; border: 1px solid var(--line); color: var(--text); width: 48px; height: 48px; font-size: 1.3rem; cursor: pointer; transition: border-color .2s, color .2s; }
+    .carousel-nav button:hover { border-color: var(--accent); color: var(--accent); }
+    .dots { display: flex; gap: 10px; }
+    .dots span { width: 28px; height: 2px; background: var(--line); transition: background .3s; }
+    .dots span.on { background: var(--accent); }
 
     /* Servicios */
     .services { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); border-top: 1px solid var(--line); border-left: 1px solid var(--line); }
@@ -132,8 +138,7 @@
   </nav>
 
   <header class="hero" id="inicio">
-    <!-- Para usar una foto de portada: style="--hero-img: url('fotos/portada.jpg')" -->
-    <div class="hero-bg"></div>
+    <div class="hero-bg" style="--hero-img: url('fotos/02-silueta.jpg')"></div>
     <div class="wrap">
       <span class="eyebrow">Modelo · Buenos Aires</span>
       <h1>Chaly</h1>
@@ -145,7 +150,7 @@
   <main>
     <section id="sobre-mi">
       <div class="wrap about">
-        <div class="about-photo reveal" style="background-image: url('fotos/retrato.jpg')"></div>
+        <div class="about-photo reveal" style="background-image: url('fotos/01-sillon.jpg')"></div>
         <div class="reveal">
           <span class="eyebrow">Sobre mí</span>
           <h2>La experiencia también se fotografía.</h2>
@@ -164,17 +169,18 @@
       <div class="wrap">
         <span class="eyebrow">Galería</span>
         <h2>Portfolio</h2>
-        <!-- Reemplazá cada <div class="ph"> por <img src="fotos/01.jpg" alt="Descripción"> -->
-        <div class="gallery" id="gallery">
-          <figure class="reveal"><div class="ph" style="aspect-ratio:3/4">Foto 01</div></figure>
-          <figure class="reveal"><div class="ph" style="aspect-ratio:4/5">Foto 02</div></figure>
-          <figure class="reveal"><div class="ph" style="aspect-ratio:1/1">Foto 03</div></figure>
-          <figure class="reveal"><div class="ph" style="aspect-ratio:2/3">Foto 04</div></figure>
-          <figure class="reveal"><div class="ph" style="aspect-ratio:4/3">Foto 05</div></figure>
-          <figure class="reveal"><div class="ph" style="aspect-ratio:3/4">Foto 06</div></figure>
-          <figure class="reveal"><div class="ph" style="aspect-ratio:4/5">Foto 07</div></figure>
-          <figure class="reveal"><div class="ph" style="aspect-ratio:2/3">Foto 08</div></figure>
-          <figure class="reveal"><div class="ph" style="aspect-ratio:1/1">Foto 09</div></figure>
+        <!-- Para sumar fotos: copialas a fotos/ y agregá otro <figure> con su <img> -->
+        <div class="carousel">
+          <div class="gallery" id="gallery">
+            <figure><img src="fotos/01-sillon.jpg" alt="Chaly sentado en un sillón de cuero, remera negra y jean" loading="lazy" /></figure>
+            <figure><img src="fotos/02-silueta.jpg" alt="Silueta de Chaly apoyado contra una pared, a contraluz" loading="lazy" /></figure>
+            <figure><img src="fotos/03-camisa.jpg" alt="Chaly con camisa negra, sentado y sonriendo" loading="lazy" /></figure>
+          </div>
+          <div class="carousel-nav">
+            <button type="button" class="c-prev" aria-label="Foto anterior">‹</button>
+            <div class="dots" id="dots"></div>
+            <button type="button" class="c-next" aria-label="Foto siguiente">›</button>
+          </div>
         </div>
       </div>
     </section>
@@ -312,7 +318,23 @@
       window.open(`https://wa.me/${WHATSAPP}?text=${encodeURIComponent(text)}`, "_blank", "noopener");
     });
 
-    // Lightbox: solo para fotos reales (<img>), no para los marcadores
+    // Carrusel
+    const track = document.getElementById("gallery");
+    const slides = [...track.children];
+    const dots = document.getElementById("dots");
+    slides.forEach(() => dots.appendChild(document.createElement("span")));
+    const step = () => slides[0].offsetWidth + 16;
+    const markDot = () => {
+      const atEnd = track.scrollLeft + track.clientWidth >= track.scrollWidth - 4;
+      const i = atEnd ? slides.length - 1 : Math.round(track.scrollLeft / step());
+      [...dots.children].forEach((d, j) => d.classList.toggle("on", j === Math.min(i, slides.length - 1)));
+    };
+    track.addEventListener("scroll", markDot, { passive: true });
+    document.querySelector(".c-prev").onclick = () => track.scrollBy({ left: -step(), behavior: "smooth" });
+    document.querySelector(".c-next").onclick = () => track.scrollBy({ left: step(), behavior: "smooth" });
+    markDot();
+
+    // Lightbox
     const lb = document.getElementById("lightbox");
     const lbImg = lb.querySelector("img");
     const photos = () => [...document.querySelectorAll("#gallery img")];

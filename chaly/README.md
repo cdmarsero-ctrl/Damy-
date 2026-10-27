@@ -1,6 +1,6 @@
 # Chaly · Portfolio de modelo
 
-Sitio estático de una sola página, en tono oscuro: portada, sobre mí, galería con visor ampliado, servicios y tarifas en pesos, medios de pago y un formulario de contacto que abre WhatsApp.
+Sitio estático de una sola página, en tono oscuro: portada, sobre mí, carrusel de fotos con visor ampliado, servicios y tarifas en pesos, medios de pago y un formulario de contacto que abre WhatsApp.
 
 No necesita build ni dependencias: abrí `index.html` en el navegador o subí la carpeta a cualquier hosting estático (Vercel, Netlify, GitHub Pages).
 
@@ -8,9 +8,9 @@ No necesita build ni dependencias: abrí `index.html` en el navegador o subí la
 
 | Qué | Dónde |
 | --- | --- |
-| Fotos de la galería | Creá `chaly/fotos/` y reemplazá cada `<div class="ph">…</div>` por `<img src="fotos/01.jpg" alt="…">` |
-| Foto de portada | En `<div class="hero-bg">` agregá `style="--hero-img: url('fotos/portada.jpg')"` |
-| Retrato de "Sobre mí" | `fotos/retrato.jpg` |
+| Fotos del carrusel | Copialas a `chaly/fotos/` y agregá un `<figure><img src="fotos/…" alt="…"></figure>` dentro de `#gallery` |
+| Foto de portada | `--hero-img` en `<div class="hero-bg">` (hoy `fotos/02-silueta.jpg`) |
+| Retrato de "Sobre mí" | `.about-photo` (hoy `fotos/01-sillon.jpg`) |
 | Altura y datos | Bloque `.stats` |
 | Tarifas | Cada `.price` en la sección Servicios |
 | Alias, CBU y link de pago | Sección Pagos (texto visible y atributo `data-copy`) |
