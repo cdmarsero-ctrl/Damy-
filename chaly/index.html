@@ -1,0 +1,340 @@
+<!doctype html>
+<html lang="es-AR">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Chaly · Modelo</title>
+  <meta name="description" content="Chaly, modelo de 40 años en Buenos Aires. Editorial, publicidad, pasarela y contenido para marcas." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,400;0,600;1,400&family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --bg: #0b0a0c;
+      --bg-2: #141216;
+      --line: #2a262d;
+      --text: #ece8e3;
+      --muted: #9a938c;
+      --accent: #c9a36a;
+      --accent-2: #8a5a3c;
+      --serif: "Cormorant Garamond", Georgia, serif;
+      --sans: "Inter", system-ui, sans-serif;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html { scroll-behavior: smooth; }
+    body { background: var(--bg); color: var(--text); font-family: var(--sans); font-weight: 300; line-height: 1.7; }
+    img { display: block; max-width: 100%; }
+    a { color: inherit; }
+    .wrap { width: min(1120px, 100% - 32px); margin-inline: auto; }
+
+    /* Navegación */
+    nav { position: fixed; inset: 0 0 auto; z-index: 20; background: linear-gradient(var(--bg), transparent); }
+    nav .wrap { display: flex; justify-content: space-between; align-items: center; padding: 20px 0; }
+    .logo { font-family: var(--serif); font-size: 1.6rem; letter-spacing: .2em; text-decoration: none; }
+    nav ul { display: flex; gap: 28px; list-style: none; font-size: .78rem; letter-spacing: .18em; text-transform: uppercase; }
+    nav ul a { text-decoration: none; color: var(--muted); transition: color .2s; }
+    nav ul a:hover { color: var(--accent); }
+
+    /* Portada */
+    .hero { min-height: 100svh; display: grid; place-items: end start; position: relative; overflow: hidden; }
+    .hero-bg { position: absolute; inset: 0; background:
+        radial-gradient(ellipse at 70% 30%, rgba(201,163,106,.18), transparent 60%),
+        linear-gradient(180deg, rgba(11,10,12,0) 40%, var(--bg) 100%),
+        var(--hero-img, linear-gradient(135deg, #1d181c, #0b0a0c)) center / cover no-repeat; }
+    .hero .wrap { position: relative; padding-bottom: 14vh; }
+    .eyebrow { font-size: .75rem; letter-spacing: .35em; text-transform: uppercase; color: var(--accent); }
+    .hero h1 { font-family: var(--serif); font-weight: 400; font-size: clamp(4rem, 14vw, 10rem); line-height: .9; margin: 16px 0 24px; }
+    .hero p { max-width: 460px; color: var(--muted); }
+    .btn { display: inline-block; margin-top: 32px; padding: 14px 34px; border: 1px solid var(--accent); color: var(--accent); text-decoration: none; font-size: .78rem; letter-spacing: .2em; text-transform: uppercase; transition: background .25s, color .25s; }
+    .btn:hover { background: var(--accent); color: var(--bg); }
+
+    section { padding: 120px 0; border-top: 1px solid var(--line); }
+    h2 { font-family: var(--serif); font-weight: 400; font-size: clamp(2.4rem, 5vw, 3.6rem); line-height: 1.1; margin: 12px 0 48px; }
+
+    /* Sobre mí */
+    .about { display: grid; grid-template-columns: 1fr 1.2fr; gap: 64px; align-items: center; }
+    .about-photo { aspect-ratio: 3/4; background: var(--bg-2) center / cover; border: 1px solid var(--line); }
+    .stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 24px; margin-top: 40px; border-top: 1px solid var(--line); padding-top: 24px; }
+    .stats dt { font-size: .7rem; letter-spacing: .2em; text-transform: uppercase; color: var(--muted); }
+    .stats dd { font-family: var(--serif); font-size: 1.6rem; }
+
+    /* Galería */
+    .gallery { columns: 3 260px; column-gap: 16px; }
+    .gallery figure { break-inside: avoid; margin-bottom: 16px; cursor: zoom-in; overflow: hidden; background: var(--bg-2); border: 1px solid var(--line); }
+    .gallery img, .gallery .ph { width: 100%; transition: transform .6s, filter .6s; filter: grayscale(.35); }
+    .gallery figure:hover img, .gallery figure:hover .ph { transform: scale(1.04); filter: none; }
+    .ph { display: grid; place-items: center; color: var(--muted); font-size: .75rem; letter-spacing: .2em; text-transform: uppercase;
+          background: linear-gradient(160deg, #1f1a1e, #100e11); }
+
+    /* Servicios */
+    .services { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); border-top: 1px solid var(--line); border-left: 1px solid var(--line); }
+    .service { padding: 36px 28px; border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+    .service h3 { font-family: var(--serif); font-weight: 400; font-size: 1.6rem; margin-bottom: 12px; }
+    .service p { color: var(--muted); font-size: .92rem; }
+    .price { margin-top: 24px; color: var(--accent); font-size: 1.1rem; }
+    .price small { color: var(--muted); font-size: .75rem; display: block; }
+    .note { color: var(--muted); font-size: .82rem; margin-top: 24px; }
+
+    /* Pagos */
+    .pay { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 24px; }
+    .pay-card { border: 1px solid var(--line); padding: 28px; background: var(--bg-2); }
+    .pay-card h3 { font-size: .78rem; letter-spacing: .2em; text-transform: uppercase; color: var(--accent); margin-bottom: 12px; font-weight: 500; }
+    .copy { display: flex; justify-content: space-between; gap: 12px; align-items: center; margin-top: 8px; padding: 10px 12px; border: 1px dashed var(--line); font-family: ui-monospace, monospace; font-size: .85rem; word-break: break-all; }
+    .copy button { background: none; border: 0; color: var(--accent); cursor: pointer; font: inherit; font-size: .72rem; letter-spacing: .1em; text-transform: uppercase; flex-shrink: 0; }
+
+    /* Contacto */
+    form { display: grid; gap: 16px; max-width: 640px; }
+    .row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+    label { font-size: .72rem; letter-spacing: .18em; text-transform: uppercase; color: var(--muted); display: grid; gap: 6px; }
+    input, select, textarea { background: transparent; border: 0; border-bottom: 1px solid var(--line); color: var(--text); font: inherit; padding: 10px 0; outline: none; }
+    input:focus, select:focus, textarea:focus { border-color: var(--accent); }
+    select option { background: var(--bg); }
+    form .btn { background: none; cursor: pointer; justify-self: start; }
+
+    footer { border-top: 1px solid var(--line); padding: 40px 0; color: var(--muted); font-size: .8rem; }
+    footer .wrap { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 12px; }
+
+    /* Lightbox */
+    .lightbox { position: fixed; inset: 0; z-index: 50; background: rgba(5,5,6,.95); display: none; place-items: center; padding: 24px; }
+    .lightbox.open { display: grid; }
+    .lightbox img { max-height: 88vh; width: auto; }
+    .lightbox button { position: absolute; background: none; border: 0; color: var(--text); font-size: 2rem; cursor: pointer; padding: 16px; }
+    .lb-close { top: 8px; right: 8px; }
+    .lb-prev { left: 8px; top: 50%; translate: 0 -50%; }
+    .lb-next { right: 8px; top: 50%; translate: 0 -50%; }
+
+    .reveal { opacity: 0; transform: translateY(24px); transition: opacity .9s, transform .9s; }
+    .reveal.in { opacity: 1; transform: none; }
+
+    @media (max-width: 760px) {
+      nav ul { display: none; }
+      .about, .row { grid-template-columns: 1fr; }
+      section { padding: 80px 0; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      html { scroll-behavior: auto; }
+      .reveal { opacity: 1; transform: none; transition: none; }
+    }
+  </style>
+</head>
+<body>
+  <nav>
+    <div class="wrap">
+      <a class="logo" href="#inicio">CHALY</a>
+      <ul>
+        <li><a href="#sobre-mi">Sobre mí</a></li>
+        <li><a href="#galeria">Galería</a></li>
+        <li><a href="#servicios">Servicios</a></li>
+        <li><a href="#pagos">Pagos</a></li>
+        <li><a href="#contacto">Contacto</a></li>
+      </ul>
+    </div>
+  </nav>
+
+  <header class="hero" id="inicio">
+    <!-- Para usar una foto de portada: style="--hero-img: url('fotos/portada.jpg')" -->
+    <div class="hero-bg"></div>
+    <div class="wrap">
+      <span class="eyebrow">Modelo · Buenos Aires</span>
+      <h1>Chaly</h1>
+      <p>Cuarenta años, presencia madura y mirada propia. Editorial, publicidad, pasarela y contenido para marcas que buscan algo más que una cara joven.</p>
+      <a class="btn" href="#contacto">Escribime</a>
+    </div>
+  </header>
+
+  <main>
+    <section id="sobre-mi">
+      <div class="wrap about">
+        <div class="about-photo reveal" style="background-image: url('fotos/retrato.jpg')"></div>
+        <div class="reveal">
+          <span class="eyebrow">Sobre mí</span>
+          <h2>La experiencia también se fotografía.</h2>
+          <p>Trabajo como modelo hace años en campañas, catálogos y producciones editoriales. Me gusta llegar al set con la propuesta entendida y aportar desde la actitud, no solo desde la pose.</p>
+          <p style="margin-top:16px;color:var(--muted)">Atención personalizada y por cita previa. Cada producción se conversa antes para ajustar estilo, tiempos y uso de imagen.</p>
+          <dl class="stats">
+            <div><dt>Edad</dt><dd>40</dd></div>
+            <div><dt>Altura</dt><dd>1,82 m</dd></div>
+            <div><dt>Base</dt><dd>CABA</dd></div>
+          </dl>
+        </div>
+      </div>
+    </section>
+
+    <section id="galeria">
+      <div class="wrap">
+        <span class="eyebrow">Galería</span>
+        <h2>Portfolio</h2>
+        <!-- Reemplazá cada <div class="ph"> por <img src="fotos/01.jpg" alt="Descripción"> -->
+        <div class="gallery" id="gallery">
+          <figure class="reveal"><div class="ph" style="aspect-ratio:3/4">Foto 01</div></figure>
+          <figure class="reveal"><div class="ph" style="aspect-ratio:4/5">Foto 02</div></figure>
+          <figure class="reveal"><div class="ph" style="aspect-ratio:1/1">Foto 03</div></figure>
+          <figure class="reveal"><div class="ph" style="aspect-ratio:2/3">Foto 04</div></figure>
+          <figure class="reveal"><div class="ph" style="aspect-ratio:4/3">Foto 05</div></figure>
+          <figure class="reveal"><div class="ph" style="aspect-ratio:3/4">Foto 06</div></figure>
+          <figure class="reveal"><div class="ph" style="aspect-ratio:4/5">Foto 07</div></figure>
+          <figure class="reveal"><div class="ph" style="aspect-ratio:2/3">Foto 08</div></figure>
+          <figure class="reveal"><div class="ph" style="aspect-ratio:1/1">Foto 09</div></figure>
+        </div>
+      </div>
+    </section>
+
+    <section id="servicios">
+      <div class="wrap">
+        <span class="eyebrow">Servicios y tarifas</span>
+        <h2>Cómo podemos trabajar</h2>
+        <div class="services">
+          <article class="service reveal">
+            <h3>Editorial</h3>
+            <p>Producciones de moda y lifestyle para revistas, lookbooks y medios digitales.</p>
+            <div class="price">$ 180.000 <small>por jornada (hasta 8 h)</small></div>
+          </article>
+          <article class="service reveal">
+            <h3>Publicidad</h3>
+            <p>Campañas gráficas y audiovisuales. El valor final depende de medios, territorio y vigencia del uso de imagen.</p>
+            <div class="price">desde $ 350.000 <small>por jornada + derechos</small></div>
+          </article>
+          <article class="service reveal">
+            <h3>Pasarela y eventos</h3>
+            <p>Desfiles, presentaciones de producto, showrooms y activaciones de marca.</p>
+            <div class="price">$ 120.000 <small>por evento (hasta 4 h)</small></div>
+          </article>
+          <article class="service reveal">
+            <h3>Contenido para marcas</h3>
+            <p>Fotos y videos cortos para redes, e‑commerce y catálogos, con entrega en formato vertical y horizontal.</p>
+            <div class="price">$ 90.000 <small>pack de 10 piezas</small></div>
+          </article>
+          <article class="service reveal">
+            <h3>Sesión online</h3>
+            <p>Videollamada de casting, prueba de cámara o asesoría de imagen para tu producción.</p>
+            <div class="price">$ 25.000 <small>por 45 minutos</small></div>
+          </article>
+        </div>
+        <p class="note">Valores en pesos argentinos, de referencia y sujetos a actualización. Se confirma presupuesto por escrito antes de cada trabajo. Seña del 30 % para reservar fecha.</p>
+      </div>
+    </section>
+
+    <section id="pagos">
+      <div class="wrap">
+        <span class="eyebrow">Medios de pago</span>
+        <h2>Formas de abonar</h2>
+        <div class="pay">
+          <div class="pay-card reveal">
+            <h3>Mercado Pago</h3>
+            <p>Transferí al alias:</p>
+            <div class="copy"><span>chaly.modelo.mp</span><button data-copy="chaly.modelo.mp">Copiar</button></div>
+          </div>
+          <div class="pay-card reveal">
+            <h3>Transferencia bancaria</h3>
+            <p>Alias / CBU:</p>
+            <div class="copy"><span>chaly.modelo.banco</span><button data-copy="chaly.modelo.banco">Copiar</button></div>
+            <div class="copy"><span>0000000000000000000000</span><button data-copy="0000000000000000000000">Copiar</button></div>
+          </div>
+          <div class="pay-card reveal">
+            <h3>Link de pago</h3>
+            <p>Pagá con tarjeta de débito o crédito, en cuotas según tu banco.</p>
+            <a class="btn" href="https://link.mercadopago.com.ar/TU-LINK" target="_blank" rel="noopener">Ir al link</a>
+          </div>
+        </div>
+        <p class="note">Enviá el comprobante por WhatsApp o mail para confirmar la reserva.</p>
+      </div>
+    </section>
+
+    <section id="contacto">
+      <div class="wrap">
+        <span class="eyebrow">Contacto</span>
+        <h2>Escribime y conozcámonos</h2>
+        <form id="contact-form">
+          <div class="row">
+            <label>Nombre <input name="nombre" required autocomplete="name" /></label>
+            <label>Marca o productora <input name="marca" /></label>
+          </div>
+          <div class="row">
+            <label>Servicio
+              <select name="servicio">
+                <option>Editorial</option>
+                <option>Publicidad</option>
+                <option>Pasarela y eventos</option>
+                <option>Contenido para marcas</option>
+                <option>Sesión online</option>
+              </select>
+            </label>
+            <label>Fecha tentativa <input name="fecha" type="date" /></label>
+          </div>
+          <label>Contame el proyecto <textarea name="mensaje" rows="4" required></textarea></label>
+          <button class="btn" type="submit">Enviar por WhatsApp</button>
+        </form>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <div class="wrap">
+      <span>© <span id="year"></span> Chaly · Modelo</span>
+      <span><a href="mailto:contacto@ejemplo.com">contacto@ejemplo.com</a> · <a href="https://instagram.com/" target="_blank" rel="noopener">Instagram</a></span>
+    </div>
+  </footer>
+
+  <div class="lightbox" id="lightbox" role="dialog" aria-modal="true" aria-label="Foto ampliada">
+    <button class="lb-close" aria-label="Cerrar">×</button>
+    <button class="lb-prev" aria-label="Anterior">‹</button>
+    <img alt="" />
+    <button class="lb-next" aria-label="Siguiente">›</button>
+  </div>
+
+  <script>
+    // Número de WhatsApp en formato internacional, sin "+" ni espacios.
+    const WHATSAPP = "5491100000000";
+
+    document.getElementById("year").textContent = new Date().getFullYear();
+
+    // Animación al hacer scroll
+    const io = new IntersectionObserver((entries) => {
+      entries.forEach((e) => { if (e.isIntersecting) { e.target.classList.add("in"); io.unobserve(e.target); } });
+    }, { threshold: 0.12 });
+    document.querySelectorAll(".reveal").forEach((el) => io.observe(el));
+
+    // Copiar alias y CBU
+    document.querySelectorAll("[data-copy]").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        try { await navigator.clipboard.writeText(btn.dataset.copy); btn.textContent = "Copiado"; }
+        catch { btn.textContent = "Error"; }
+        setTimeout(() => (btn.textContent = "Copiar"), 1800);
+      });
+    });
+
+    // Formulario: arma el mensaje y abre WhatsApp
+    document.getElementById("contact-form").addEventListener("submit", (ev) => {
+      ev.preventDefault();
+      const d = Object.fromEntries(new FormData(ev.target));
+      const text = `Hola Chaly, soy ${d.nombre}${d.marca ? ` (${d.marca})` : ""}.\n` +
+        `Servicio: ${d.servicio}${d.fecha ? `\nFecha tentativa: ${d.fecha}` : ""}\n\n${d.mensaje}`;
+      window.open(`https://wa.me/${WHATSAPP}?text=${encodeURIComponent(text)}`, "_blank", "noopener");
+    });
+
+    // Lightbox: solo para fotos reales (<img>), no para los marcadores
+    const lb = document.getElementById("lightbox");
+    const lbImg = lb.querySelector("img");
+    const photos = () => [...document.querySelectorAll("#gallery img")];
+    let current = 0;
+    const show = (i) => { const p = photos(); current = (i + p.length) % p.length; lbImg.src = p[current].src; lbImg.alt = p[current].alt; };
+    document.getElementById("gallery").addEventListener("click", (ev) => {
+      const img = ev.target.closest("img");
+      if (!img) return;
+      show(photos().indexOf(img));
+      lb.classList.add("open");
+    });
+    const close = () => lb.classList.remove("open");
+    lb.querySelector(".lb-close").onclick = close;
+    lb.querySelector(".lb-prev").onclick = () => show(current - 1);
+    lb.querySelector(".lb-next").onclick = () => show(current + 1);
+    lb.addEventListener("click", (ev) => { if (ev.target === lb) close(); });
+    document.addEventListener("keydown", (ev) => {
+      if (!lb.classList.contains("open")) return;
+      if (ev.key === "Escape") close();
+      if (ev.key === "ArrowLeft") show(current - 1);
+      if (ev.key === "ArrowRight") show(current + 1);
+    });
+  </script>
+</body>
+</html>
