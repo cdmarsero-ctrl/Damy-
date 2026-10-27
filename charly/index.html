@@ -3,8 +3,8 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Chaly · Modelo</title>
-  <meta name="description" content="Chaly, modelo de 40 años en Buenos Aires. Editorial, publicidad, pasarela y contenido para marcas." />
+  <title>Charly · Modelo</title>
+  <meta name="description" content="Charly, modelo de 40 años en Buenos Aires. Editorial, publicidad, pasarela y contenido para marcas." />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,400;0,600;1,400&family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet" />
@@ -126,7 +126,7 @@
 <body>
   <nav>
     <div class="wrap">
-      <a class="logo" href="#inicio">CHALY</a>
+      <a class="logo" href="#inicio">CHARLY</a>
       <ul>
         <li><a href="#sobre-mi">Sobre mí</a></li>
         <li><a href="#galeria">Galería</a></li>
@@ -141,7 +141,7 @@
     <div class="hero-bg" style="--hero-img: url('fotos/02-silueta.jpg')"></div>
     <div class="wrap">
       <span class="eyebrow">Modelo · Buenos Aires</span>
-      <h1>Chaly</h1>
+      <h1>Charly</h1>
       <p>Cuarenta años, presencia madura y mirada propia. Editorial, publicidad, pasarela y contenido para marcas que buscan algo más que una cara joven.</p>
       <a class="btn" href="#contacto">Escribime</a>
     </div>
@@ -172,9 +172,9 @@
         <!-- Para sumar fotos: copialas a fotos/ y agregá otro <figure> con su <img> -->
         <div class="carousel">
           <div class="gallery" id="gallery">
-            <figure><img src="fotos/01-sillon.jpg" alt="Chaly sentado en un sillón de cuero, remera negra y jean" loading="lazy" /></figure>
-            <figure><img src="fotos/02-silueta.jpg" alt="Silueta de Chaly apoyado contra una pared, a contraluz" loading="lazy" /></figure>
-            <figure><img src="fotos/03-camisa.jpg" alt="Chaly con camisa negra, sentado y sonriendo" loading="lazy" /></figure>
+            <figure><img src="fotos/01-sillon.jpg" alt="Charly sentado en un sillón de cuero, remera negra y jean" loading="lazy" /></figure>
+            <figure><img src="fotos/02-silueta.jpg" alt="Silueta de Charly apoyado contra una pared, a contraluz" loading="lazy" /></figure>
+            <figure><img src="fotos/03-camisa.jpg" alt="Charly con camisa negra, sentado y sonriendo" loading="lazy" /></figure>
           </div>
           <div class="carousel-nav">
             <button type="button" class="c-prev" aria-label="Foto anterior">‹</button>
@@ -228,12 +228,12 @@
           <div class="pay-card reveal">
             <h3>Mercado Pago</h3>
             <p>Transferí al alias:</p>
-            <div class="copy"><span>chaly.modelo.mp</span><button data-copy="chaly.modelo.mp">Copiar</button></div>
+            <div class="copy"><span>charly.modelo.mp</span><button data-copy="charly.modelo.mp">Copiar</button></div>
           </div>
           <div class="pay-card reveal">
             <h3>Transferencia bancaria</h3>
             <p>Alias / CBU:</p>
-            <div class="copy"><span>chaly.modelo.banco</span><button data-copy="chaly.modelo.banco">Copiar</button></div>
+            <div class="copy"><span>charly.modelo.banco</span><button data-copy="charly.modelo.banco">Copiar</button></div>
             <div class="copy"><span>0000000000000000000000</span><button data-copy="0000000000000000000000">Copiar</button></div>
           </div>
           <div class="pay-card reveal">
@@ -276,7 +276,7 @@
 
   <footer>
     <div class="wrap">
-      <span>© <span id="year"></span> Chaly · Modelo</span>
+      <span>© <span id="year"></span> Charly · Modelo</span>
       <span><a href="mailto:contacto@ejemplo.com">contacto@ejemplo.com</a> · <a href="https://instagram.com/" target="_blank" rel="noopener">Instagram</a></span>
     </div>
   </footer>
@@ -313,7 +313,7 @@
     document.getElementById("contact-form").addEventListener("submit", (ev) => {
       ev.preventDefault();
       const d = Object.fromEntries(new FormData(ev.target));
-      const text = `Hola Chaly, soy ${d.nombre}${d.marca ? ` (${d.marca})` : ""}.\n` +
+      const text = `Hola Charly, soy ${d.nombre}${d.marca ? ` (${d.marca})` : ""}.\n` +
         `Servicio: ${d.servicio}${d.fecha ? `\nFecha tentativa: ${d.fecha}` : ""}\n\n${d.mensaje}`;
       window.open(`https://wa.me/${WHATSAPP}?text=${encodeURIComponent(text)}`, "_blank", "noopener");
     });
